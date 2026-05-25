@@ -1,0 +1,33 @@
+# Secrets
+.env
+
+# Données de session Claude Code
+.claude/
+
+# HTML bruts ScrapingBee (volumineux, non versionné)
+debug/*.html
+capture_seloger.html
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# Environnements virtuels
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
