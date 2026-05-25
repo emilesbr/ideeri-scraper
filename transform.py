@@ -119,6 +119,8 @@ def parse_lbc_ads(data_brute: dict) -> list[dict]:
         type_bien = "maison" if "maison" in cat else "appartement"
 
         dpe_raw = _lbc_attr(a, "energy_rate")
+        if not dpe_raw and _lbc_attr(a, "immo_sell_type") == "new":
+            dpe_raw = "N"
         ges_raw = _lbc_attr(a, "ges")
 
         def _lbc_int(ad, key):
