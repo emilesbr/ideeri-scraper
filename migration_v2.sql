@@ -108,6 +108,11 @@ CREATE INDEX IF NOT EXISTS idx_annonces_premiere_obs
 CREATE INDEX IF NOT EXISTS idx_annonces_bien_id
     ON annonces (bien_id) WHERE bien_id IS NOT NULL;
 
+ALTER TABLE annonces ADD COLUMN IF NOT EXISTS date_maj_portail date;
+-- Date de dernière modification sur le portail SeLoger (metadata.updateDate).
+-- Différente de date_derniere_obs (observation Ideeri) : permet de détecter
+-- les rediffusions et baisses de prix sans nouveau run Ideeri.
+
 
 -- =============================================================
 -- 4. TABLES stg_lbc / stg_seloger — colonnes manquantes

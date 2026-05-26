@@ -79,7 +79,7 @@ CREATE INDEX IF NOT EXISTS idx_entites_cp        ON entites USING GIN (codes_pos
 --
 -- Colonnes de base (existantes avant migration_v2) :
 --   id_annonce, source, type_bien, prix_affiche, surface, code_postal,
---   date_premiere_obs, date_derniere_obs, est_active, bien_id, cluster_bien_id,
+--   date_premiere_obs, date_derniere_obs, date_maj_portail, est_active, bien_id, cluster_bien_id,
 --   sur_lbc, sur_seloger, signature_entite_bien, nom_commercial
 --
 -- Colonnes ajoutées en migration V2 :
@@ -107,6 +107,10 @@ ALTER TABLE annonces ADD COLUMN IF NOT EXISTS annee_construction  integer;
 -- LBC: attr building_year
 ALTER TABLE annonces ADD COLUMN IF NOT EXISTS etage               integer;
 -- LBC: attr floor_number
+ALTER TABLE annonces ADD COLUMN IF NOT EXISTS date_maj_portail    date;
+-- Date de dernière modification sur SeLoger (metadata.updateDate).
+-- Différente de date_derniere_obs (observation Ideeri) : permet de détecter
+-- les rediffusions et baisses de prix sans nouveau run Ideeri.
 ALTER TABLE annonces ADD COLUMN IF NOT EXISTS bien_id             text;
 -- Identifiant canonique du bien : id_annonce (non matché), id_annonce LBC (intra_entity), cluster_id hex (cross_entity)
 ALTER TABLE annonces ADD COLUMN IF NOT EXISTS cluster_bien_id     text;

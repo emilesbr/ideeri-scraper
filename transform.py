@@ -264,21 +264,23 @@ def parse_seloger_ads(data_brute: dict) -> list[dict]:
             except (ValueError, TypeError):
                 pass
 
+        upd_raw = meta.get("updateDate", "")
         results.append({
-            "id_annonce":       f"seloger_{lid}",
-            "source":           "seloger",
-            "type_bien":        type_bien,
-            "titre":            hf.get("title", ""),
-            "prix_affiche":     prix,
-            "surface":          surface,
-            "nb_pieces":        nb_pieces,
-            "code_postal":      cp,
-            "commune":          ville,
-            "url_annonce":      f"https://www.seloger.com/annonces/achat/{ville.lower().replace(' ','-')}/{lid}.htm",
-            "date_publication": meta.get("creationDate", "")[:10] if meta.get("creationDate") else None,
-            "sur_lbc":          False,
-            "sur_seloger":      True,
-            "dpe":              item.get("energyClass"),  # 'A'–'G' ou None
+            "id_annonce":        f"seloger_{lid}",
+            "source":            "seloger",
+            "type_bien":         type_bien,
+            "titre":             hf.get("title", ""),
+            "prix_affiche":      prix,
+            "surface":           surface,
+            "nb_pieces":         nb_pieces,
+            "code_postal":       cp,
+            "commune":           ville,
+            "url_annonce":       f"https://www.seloger.com/annonces/achat/{ville.lower().replace(' ','-')}/{lid}.htm",
+            "date_publication":  meta.get("creationDate", "")[:10] if meta.get("creationDate") else None,
+            "date_maj_portail":  upd_raw[:10] if upd_raw else None,
+            "sur_lbc":           False,
+            "sur_seloger":       True,
+            "dpe":               item.get("energyClass"),  # 'A'–'G' ou None
             "_entity": {
                 "nom":              nom_agence,
                 "siren":            siren,
@@ -411,6 +413,7 @@ def upsert_annonce(ann: dict, entite_id: str | None, run_id: int, scraped_at: st
             "energie_budget_max":  ann.get("energie_budget_max"),
             "annee_construction":  ann.get("annee_construction"),
             "etage":               ann.get("etage"),
+            "date_maj_portail":    ann.get("date_maj_portail"),
             "nom_commercial":      ann["_entity"].get("nom"),
             "signature_entite_bien": entity_signature(
                 ann["_entity"].get("siren"), ann["_entity"].get("type", "agence"),
@@ -444,6 +447,10 @@ def upsert_annonce(ann: dict, entite_id: str | None, run_id: int, scraped_at: st
     for field in ("energie_budget_min", "energie_budget_max", "annee_construction", "etage"):
         if ann.get(field) and not row.get(field):
             updates[field] = ann[field]
+
+    # date_maj_portail : toujours mis à jour (reflète la dernière modif connue sur le portail)
+    if ann.get("date_maj_portail"):
+        updates["date_maj_portail"] = ann["date_maj_portail"]
 
     status = "unchanged"
     if ancien_prix and ann.get("prix_affiche") and ann["prix_affiche"] != ancien_prix:
