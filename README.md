@@ -2,23 +2,27 @@
 
 Pipeline Python qui scrape SeLoger et LeBonCoin pour cartographier les agences immobilières
 actives sur un territoire, suivre leur volume de diffusion dans le temps, et détecter les
-biens publiés sur plusieurs portails par la même entité.
+biens publiés sur plusieurs portails par la même entité ou par des entités concurrentes.
 
 ## Stack
 
 - **Python 3.10+** — scraping, parsing, transform
-- **ScrapingBee** — proxy anti-bot (premium pour SeLoger, stealth pour LBC)
+- **ScrapingBee** — proxy anti-bot (premium pour SeLoger et LBC)
 - **Supabase** (PostgreSQL) — stockage des annonces, entités, runs
+- **Flask + Flask-CORS** — API locale pour le dashboard
 - **lzstring** — décompression des données SeLoger (`__UFRN_FETCHER__`)
 
 ## Structure
 
 ```
 ideeri/
-├── scrape_givors.py      # Scraper opérationnel Givors — modèle par commune
-├── transform.py          # Pipeline principal : stg_* → annonces + entites + runs
-├── test_scrapingbee.py   # Benchmark des paramètres ScrapingBee
-├── test_ecully.py        # Script de validation des paramètres (Écully)
+├── pipeline.py           # Point d'entrée unique : scrape, transform, check, reset
+├── transform.py          # Cœur du pipeline : stg_* → annonces + entites + runs
+├── api.py                # API Flask → localhost:5000
+├── dashboard.html        # Dashboard SPA à ouvrir dans le navigateur
+│
+├── test_ecully.py        # Validation des paramètres ScrapingBee (référence)
+├── test_scrapingbee.py   # Benchmark 8 combinaisons de paramètres (A–H)
 ├── migration_v2.sql      # Schéma Supabase idempotent
 ├── .env.example          # Template des variables d'environnement
 └── debug/                # HTML bruts ScrapingBee (gitignorés)
@@ -29,7 +33,7 @@ ideeri/
 ```bash
 git clone <repo>
 cd ideeri
-pip install supabase python-dotenv requests lzstring
+pip install supabase python-dotenv requests lzstring flask flask-cors
 cp .env.example .env
 # Remplir .env avec vos clés
 ```
@@ -37,31 +41,42 @@ cp .env.example .env
 ## Variables d'environnement
 
 ```bash
-SCRAPINGBEE_KEY=   # Clé API ScrapingBee
+SCRAPINGBEE_KEY=   # Clé API ScrapingBee (quota mensuel, reset le 1er)
 SUPA_URL=          # https://<ref>.supabase.co
-SUPA_KEY=          # Clé anon ou service_role Supabase
+SUPA_KEY=          # Clé anon Supabase
 ```
 
 ## Utilisation
 
-### 1. Scraper une commune
-
-Copier `scrape_givors.py`, adapter les 6 constantes (COMMUNE, CODE_POSTAL, NB_PAGES_SL,
-NB_PAGES_LBC, SL_BASE, LBC_BASE), puis :
+### 1. Scraper et transformer une commune (commande principale)
 
 ```bash
-python3 scrape_<commune>.py
+python3 pipeline.py run <code_postal> <commune> [--sl-code AD08FRXXXXX]
+
+# Exemples
+python3 pipeline.py run 69700 Givors --sl-code AD08FR28776
+python3 pipeline.py run 42800 Rive-de-Gier
+python3 pipeline.py run 69700 Givors --source lbc   # LBC uniquement
 ```
 
-### 2. Transformer les données en annonces structurées
+### 2. Autres commandes pipeline
 
 ```bash
-python3 transform.py <code_postal> <commune>
-# Exemple :
-python3 transform.py 69700 Givors
+python3 pipeline.py check                        # Quota ScrapingBee + derniers runs
+python3 pipeline.py status <cp>                  # État d'une zone
+python3 pipeline.py scrape <cp> <commune>        # Scraping seul (sans transform)
+python3 pipeline.py transform <cp> <commune>     # Transform seul (données déjà en stg_*)
+python3 pipeline.py reset <cp>                   # Réinitialise les données d'une zone
 ```
 
-### 3. Requêtes analytiques (Supabase SQL Editor)
+### 3. Dashboard
+
+```bash
+python3 api.py          # Lance l'API → http://localhost:5000
+# Ouvrir dashboard.html dans le navigateur
+```
+
+### 4. Requêtes analytiques (Supabase SQL Editor)
 
 ```sql
 -- Biens uniques sur la commune
@@ -74,9 +89,14 @@ SELECT
   COUNT(*) AS nb_biens
 FROM biens_uniques WHERE code_postal = '69700' GROUP BY 1;
 
--- Top entités
-SELECT nom_commercial, nb_annonces_actives, sur_lbc, sur_seloger
-FROM entites ORDER BY nb_annonces_actives DESC LIMIT 20;
+-- Top entités avec part de marché
+SELECT nom_commercial,
+  COUNT(DISTINCT bien_id) AS biens_uniques,
+  COUNT(DISTINCT CASE WHEN source='lbc'     THEN bien_id END) AS lbc,
+  COUNT(DISTINCT CASE WHEN source='seloger' THEN bien_id END) AS seloger
+FROM annonces
+WHERE code_postal = '69700' AND est_active = TRUE
+GROUP BY nom_commercial ORDER BY biens_uniques DESC;
 ```
 
 ## Schéma de données
@@ -84,13 +104,13 @@ FROM entites ORDER BY nb_annonces_actives DESC LIMIT 20;
 | Table | Rôle |
 |-------|------|
 | `stg_lbc` / `stg_seloger` | Staging brut — une ligne par page scrapée |
-| `annonces` | Une ligne par annonce portail, suivi temporel (date_premiere_obs, est_active, historique_prix) |
+| `annonces` | Une ligne par annonce portail, suivi temporel (`est_active`, `historique_prix`) |
 | `entites` | Une ligne par agence/particulier dédupliqué inter-portails via SIREN |
 | `runs` | Journal de chaque exécution transform |
 | `biens_uniques` (vue) | Un bien réel par ligne, flags portail agrégés, compatible DVF/ADEME |
 
-## Résultats Givors (run de référence)
+## Résultats Givors (mai 2026 — 12 runs)
 
-- 231 annonces actives · 79 entités · 142 biens uniques
-- 45 biens détectés sur les deux portails par fuzzy matching (score confiance 0.5–1.0)
-- Couverture DPE : 78% (LBC 58% · SeLoger 97%)
+- **240 annonces actives** · **114 entités** · **136 biens uniques**
+- 35 biens en multi-mandat (même bien, agences différentes) — 26% du parc
+- Couverture DPE : ~90% · GES : ~28% (LBC uniquement)

@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ideeri — Dashboard</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+       background: #f0f4f8; color: #2d3748; font-size: 14px; }
+.app    { display: flex; height: 100vh; overflow: hidden; }
+.sidebar{ width: 230px; background: #1a202c; color: #e2e8f0; display: flex;
+          flex-direction: column; flex-shrink: 0; }
+.main   { flex: 1; overflow-y: auto; }
+.sb-head { padding: 20px 18px 14px; font-size: 22px; font-weight: 800; color: #fff;
+           border-bottom: 1px solid #2d3748; letter-spacing: -.5px; }
+.sb-head em { color: #f6993f; font-style: normal; }
+.sb-section { padding: 12px 18px 4px; font-size: 10px; text-transform: uppercase;
+              letter-spacing: .08em; color: #4a5568; }
+.zone-item { padding: 10px 18px; cursor: pointer; transition: background .12s;
+             border-left: 3px solid transparent; }
+.zone-item:hover { background: #2d3748; }
+.zone-item.active { background: #2b4c7e; border-left-color: #63b3ed; }
+.zone-item .cp    { font-weight: 600; font-size: 13px; }
+.zone-item .zname { font-size: 11px; color: #718096; margin-top: 2px; }
+.zone-item .zmeta { font-size: 10px; color: #4a5568; margin-top: 1px; }
+.zone-item.active .zname { color: #90cdf4; }
+.zone-item.active .zmeta { color: #4a90d9; }
+.sb-add { margin: 12px 16px 16px; padding: 8px 12px; background: #2d3748;
+          border: 1px dashed #4a5568; border-radius: 6px; color: #718096;
+          font-size: 12px; cursor: pointer; text-align: center; transition: background .12s; }
+.sb-add:hover { background: #3d4f63; color: #e2e8f0; }
+.page-head { padding: 26px 30px 0; display: flex; justify-content: space-between; align-items: flex-start; }
+.page-title { font-size: 24px; font-weight: 700; line-height: 1.2; }
+.page-sub   { font-size: 12px; color: #718096; margin-top: 4px; }
+.btn { padding: 8px 16px; border-radius: 7px; border: none; cursor: pointer;
+       font-size: 13px; font-weight: 600; transition: background .15s; }
+.btn-primary { background: #3182ce; color: #fff; }
+.btn-primary:hover { background: #2b6cb0; }
+.btn-ghost { background: #e2e8f0; color: #4a5568; }
+.btn-ghost:hover { background: #cbd5e0; }
+.content { padding: 22px 30px 40px; }
+.cards { display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; margin-bottom: 22px; }
+.card { background: #fff; border-radius: 12px; padding: 18px 20px; box-shadow: 0 1px 3px rgba(0,0,0,.07); }
+.card-lbl { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: #718096; margin-bottom: 8px; }
+.card-val { font-size: 30px; font-weight: 700; line-height: 1; color: #1a202c; }
+.card-sub { font-size: 11px; color: #a0aec0; margin-top: 6px; }
+.card-sub strong { color: #718096; }
+.grid2 { display: grid; grid-template-columns: 200px 1fr; gap: 14px; margin-bottom: 14px; }
+.panel { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.07); }
+.p-head { padding: 14px 20px; border-bottom: 1px solid #edf2f7;
+          display: flex; justify-content: space-between; align-items: center; }
+.p-title { font-size: 13px; font-weight: 600; color: #2d3748; }
+.p-body  { padding: 16px 20px; }
+.bar-row { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.bar-row:last-child { margin-bottom: 0; }
+.bar-lbl  { font-size: 12px; color: #4a5568; width: 90px; }
+.bar-wrap { flex: 1; background: #edf2f7; border-radius: 99px; height: 7px; overflow: hidden; }
+.bar-fill { height: 7px; border-radius: 99px; transition: width .6s ease; }
+.bar-pct  { font-size: 12px; font-weight: 700; width: 36px; text-align: right; color: #2d3748; }
+.c-lbc  { background: #ed8936; }
+.c-sl   { background: #3182ce; }
+.c-both { background: #38a169; }
+.pc-item { display: flex; justify-content: space-between; align-items: center;
+           padding: 8px 0; border-bottom: 1px solid #f7fafc; font-size: 12px; }
+.pc-item:last-child { border: none; }
+.pc-agency { color: #4a5568; max-width: 120px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.down { color: #38a169; font-weight: 700; }
+.up   { color: #e53e3e; font-weight: 700; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { padding: 9px 14px; text-align: left; font-size: 10px; text-transform: uppercase;
+     letter-spacing: .05em; color: #718096; background: #f7fafc;
+     border-bottom: 1px solid #edf2f7; cursor: pointer; user-select: none; }
+th:hover { color: #2d3748; }
+td { padding: 10px 14px; border-bottom: 1px solid #f7fafc; vertical-align: middle; }
+tr:last-child td { border: none; }
+tr:hover td { background: #fafbfc; cursor: pointer; }
+.ent-name { color: #3182ce; font-weight: 500; }
+.ent-name:hover { text-decoration: underline; }
+.rank { display: inline-flex; align-items: center; justify-content: center;
+        width: 24px; height: 24px; border-radius: 50%; font-size: 11px; font-weight: 700; }
+.rank-1 { background: #fef3c7; color: #92400e; border: 1.5px solid #f6d860; }
+.rank-2 { background: #f1f5f9; color: #475569; border: 1.5px solid #cbd5e0; }
+.rank-3 { background: #fce8e0; color: #9a3412; border: 1.5px solid #f5bba3; }
+.rank-n { background: #f7fafc; color: #a0aec0; border: 1.5px solid #e2e8f0; font-size: 10px; }
+.pdm-wrap { display: flex; align-items: center; gap: 8px; min-width: 140px; }
+.pdm-bg   { flex: 1; height: 6px; background: #edf2f7; border-radius: 3px; overflow: hidden; }
+.pdm-fill { height: 6px; border-radius: 3px; }
+.pdm-pct  { font-size: 12px; font-weight: 700; min-width: 34px; text-align: right; }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 99px; font-size: 11px; font-weight: 600; }
+.b-lbc  { background: #fef3c7; color: #92400e; }
+.b-sl   { background: #dbeafe; color: #1e40af; }
+.b-both { background: #d1fae5; color: #065f46; }
+.tag-part { font-size: 11px; color: #805ad5; background: #faf5ff; padding: 1px 6px; border-radius: 4px; }
+.overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.45);
+           z-index: 200; align-items: center; justify-content: center; }
+.overlay.open { display: flex; }
+.modal { background: #fff; border-radius: 14px; width: 540px; max-height: 85vh;
+         display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0,0,0,.3); }
+.m-head { padding: 20px 24px; border-bottom: 1px solid #edf2f7;
+          display: flex; justify-content: space-between; align-items: center; }
+.m-title { font-size: 16px; font-weight: 700; }
+.m-close { background: none; border: none; cursor: pointer; font-size: 24px; color: #a0aec0; line-height: 1; }
+.m-close:hover { color: #4a5568; }
+.m-body { padding: 24px; flex: 1; overflow-y: auto; }
+.m-foot { padding: 14px 24px; border-top: 1px solid #edf2f7; display: flex; justify-content: flex-end; gap: 8px; }
+.form-row { margin-bottom: 16px; }
+.form-row label { display: block; font-size: 12px; font-weight: 600; color: #4a5568; margin-bottom: 6px; }
+.form-row input, .form-row select { width: 100%; padding: 9px 12px; border: 1px solid #cbd5e0;
+  border-radius: 7px; font-size: 13px; outline: none; color: #2d3748; }
+.form-row input:focus, .form-row select:focus { border-color: #3182ce; }
+.log-box { background: #1a202c; border-radius: 8px; padding: 14px; font-family: monospace;
+           font-size: 11.5px; color: #cbd5e0; height: 280px; overflow-y: auto;
+           white-space: pre-wrap; line-height: 1.6; }
+.l-ok   { color: #68d391; }
+.l-err  { color: #fc8181; }
+.l-warn { color: #f6e05e; }
+.empty  { text-align: center; padding: 40px; color: #a0aec0; font-size: 14px; }
+.dimmed { color: #cbd5e0; }
+.api-err { background: #fee2e2; color: #991b1b; border-radius: 8px; padding: 12px 16px;
+           font-size: 13px; margin: 20px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="sb-head">Ide<em>eri</em></div>
+    <div class="sb-section">Zones</div>
+    <div id="zones-list"><div class="empty" style="color:#4a5568;padding:20px;font-size:11px">Chargement…</div></div>
+    <div class="sb-add" onclick="openRunModal()">+ Nouvelle zone</div>
+  </aside>
+  <div class="main" id="main">
+    <div class="empty" style="margin-top:140px;font-size:15px">← Sélectionne une zone</div>
+  </div>
+</div>
+
+<div class="overlay" id="run-overlay">
+  <div class="modal">
+    <div class="m-head">
+      <span class="m-title">Lancer un run</span>
+      <button class="m-close" onclick="closeRunModal()">×</button>
+    </div>
+    <div class="m-body">
+      <div id="run-form">
+        <div class="form-row"><label>Code postal *</label><input type="text" id="r-cp" placeholder="ex : 69700"></div>
+        <div class="form-row"><label>Commune *</label><input type="text" id="r-commune" placeholder="ex : Givors"></div>
+        <div class="form-row">
+          <label>Code SeLoger <span style="color:#a0aec0;font-weight:400">(optionnel — ex : AD08FR28776)</span></label>
+          <input type="text" id="r-slcode" placeholder="AD08FRXXXXX">
+        </div>
+        <div class="form-row"><label>Source</label>
+          <select id="r-source">
+            <option value="">LBC + SeLoger</option>
+            <option value="lbc">LBC uniquement</option>
+            <option value="seloger">SeLoger uniquement</option>
+          </select>
+        </div>
+      </div>
+      <div id="run-log" style="display:none"><div class="log-box" id="log-content"></div></div>
+    </div>
+    <div class="m-foot">
+      <button class="btn btn-ghost" onclick="closeRunModal()">Annuler</button>
+      <button class="btn btn-primary" id="run-action-btn" onclick="startRun()">▶ Lancer</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = 'http://localhost:5000/api';
+let currentCp = '';
+let currentCommune = '';
+let sortCol = 'mandats';
+let sortAsc = false;
+let zoneData = null;
+
+// ── Sidebar ─────────────────────────────────────────────────────────────────
+async function loadZones() {
+  try {
+    const zones = await apiFetch('/zones');
+    const list = document.getElementById('zones-list');
+    if (!zones.length) {
+      list.innerHTML = '<div class="empty" style="color:#4a5568;padding:16px;font-size:11px">Aucune zone — lance un run</div>';
+      return;
+    }
+    list.innerHTML = zones.map(z => `
+      <div class="zone-item" id="zi-${z.cp}" onclick="selectZone('${z.cp}','${esc(z.commune)}')">
+        <div class="cp">${z.cp}</div>
+        <div class="zname">${z.commune}</div>
+        <div class="zmeta">${z.nb_annonces} ann. · ${z.nb_runs} run${z.nb_runs>1?'s':''}</div>
+      </div>`).join('');
+  } catch(e) {
+    document.getElementById('zones-list').innerHTML = `
+      <div style="padding:14px 16px">
+        <div style="color:#fc8181;font-size:11px;margin-bottom:8px">⚠ API non disponible</div>
+        <div style="color:#4a5568;font-size:10px;line-height:1.5">Lance dans le terminal :<br><code style="color:#90cdf4">python3 api.py</code></div>
+      </div>`;
+  }
+}
+
+// ── Vue zone ─────────────────────────────────────────────────────────────────
+async function selectZone(cp, commune) {
+  currentCp = cp; currentCommune = commune;
+  document.querySelectorAll('.zone-item').forEach(el => el.classList.remove('active'));
+  const zi = document.getElementById('zi-'+cp);
+  if (zi) zi.classList.add('active');
+  document.getElementById('main').innerHTML =
+    '<div class="empty" style="margin-top:120px">Chargement…</div>';
+  try {
+    zoneData = await apiFetch('/zone/'+cp);
+    sortCol = 'mandats'; sortAsc = false;
+    renderZone();
+  } catch(e) {
+    document.getElementById('main').innerHTML =
+      `<div class="api-err">Erreur chargement zone ${cp} : ${e.message}</div>`;
+  }
+}
+
+function renderZone() {
+  const z = zoneData;
+  const totalMandats = z.nb_mandats || 0;
+  let entites = [...(z.entites||[])];
+  const colKey = sortCol==='biens'?'nb_biens':sortCol==='nom'?'nom':'nb_mandats';
+  entites.sort((a,b) => {
+    const va=a[colKey], vb=b[colKey];
+    if (typeof va==='string') return sortAsc?va.localeCompare(vb):vb.localeCompare(va);
+    return sortAsc?va-vb:vb-va;
+  });
+  const pctLbc  = totalMandats ? Math.round((z.nb_mandats_lbc||0)/totalMandats*100)  : 0;
+  const pctSl   = totalMandats ? Math.round((z.nb_mandats_sl||0)/totalMandats*100)   : 0;
+  const pctBoth = totalMandats ? Math.round((z.nb_mandats_both||0)/totalMandats*100) : 0;
+  const pctMulti= z.nb_biens   ? Math.round((z.nb_multi_mandats||0)/z.nb_biens*100)  : 0;
+  const pctDpe  = z.nb_annonces? Math.round((z.nb_dpe||0)/z.nb_annonces*100)         : 0;
+  const thS = (col, lbl) =>
+    `<th onclick="setSort('${col}')" style="cursor:pointer">${lbl} ${sortCol===col?(sortAsc?'↑':'↓'):''}</th>`;
+
+  document.getElementById('main').innerHTML = `
+    <div class="page-head">
+      <div>
+        <div class="page-title">${z.commune} <span style="font-weight:400;font-size:16px;color:#718096">${z.cp}</span></div>
+        <div class="page-sub">Dernier run : ${z.last_run||'—'} · ${z.nb_annonces||0} annonces actives</div>
+      </div>
+      <button class="btn btn-primary" onclick="openRunModal('${z.cp}','${esc(z.commune)}')">▶ Relancer</button>
+    </div>
+    <div class="content">
+      <div class="cards">
+        <div class="card"><div class="card-lbl">Biens uniques</div><div class="card-val">${z.nb_biens||0}</div><div class="card-sub">après déduplication</div></div>
+        <div class="card"><div class="card-lbl">Mandats réels</div><div class="card-val">${totalMandats}</div><div class="card-sub"><strong>${(totalMandats/Math.max(z.nb_biens||1,1)).toFixed(2)}</strong> mandat / bien</div></div>
+        <div class="card"><div class="card-lbl">Entités actives</div><div class="card-val">${z.nb_entites||0}</div><div class="card-sub">agences + particuliers</div></div>
+        <div class="card"><div class="card-lbl">Multi-mandats</div><div class="card-val">${z.nb_multi_mandats||0}</div><div class="card-sub"><strong>${pctMulti}%</strong> des biens</div></div>
+        <div class="card"><div class="card-lbl">Couverture DPE</div><div class="card-val">${pctDpe}%</div><div class="card-sub">${z.nb_dpe||0} / ${z.nb_annonces||0} annonces</div></div>
+      </div>
+      <div class="grid2">
+        <div class="panel">
+          <div class="p-head"><span class="p-title">Portails</span></div>
+          <div class="p-body">
+            <div class="bar-row"><span class="bar-lbl">LBC seul</span><div class="bar-wrap"><div class="bar-fill c-lbc" style="width:${pctLbc}%"></div></div><span class="bar-pct">${pctLbc}%</span></div>
+            <div class="bar-row"><span class="bar-lbl">SeLoger seul</span><div class="bar-wrap"><div class="bar-fill c-sl" style="width:${pctSl}%"></div></div><span class="bar-pct">${pctSl}%</span></div>
+            <div class="bar-row"><span class="bar-lbl">Les deux</span><div class="bar-wrap"><div class="bar-fill c-both" style="width:${pctBoth}%"></div></div><span class="bar-pct">${pctBoth}%</span></div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="p-head"><span class="p-title">Mouvements de prix récents</span></div>
+          <div class="p-body">
+            ${(z.price_changes||[]).length ? (z.price_changes||[]).slice(0,5).map(p=>`
+              <div class="pc-item">
+                <span class="pc-agency">${p.nom||'—'}</span>
+                <span style="color:#718096;font-size:11px">${fmt(p.ancien_prix)} € →</span>
+                <span class="${p.delta<0?'down':'up'}">${p.delta<0?'▼':'▲'} ${fmt(Math.abs(p.delta))} €</span>
+              </div>`).join('') :
+              '<div style="color:#a0aec0;font-size:12px;padding:4px 0">Aucune variation détectée</div>'}
+          </div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="p-head">
+          <span class="p-title">Classement des entités — part de marché</span>
+          <span style="font-size:11px;color:#a0aec0">${entites.length} entité${entites.length>1?'s':''} · ${totalMandats} mandats au total</span>
+        </div>
+        <table>
+          <thead><tr>
+            <th style="width:40px">#</th>
+            ${thS('nom','Entité')}
+            ${thS('mandats','Mandats')}
+            <th style="min-width:160px">Part de marché</th>
+            ${thS('biens','Biens uniques')}
+            <th>LBC</th><th>SeLoger</th><th>Type</th>
+          </tr></thead>
+          <tbody>
+            ${entites.map((e,i) => {
+              const pdm = totalMandats ? Math.round(e.nb_mandats/totalMandats*100) : 0;
+              const col = e.nb_lbc&&e.nb_seloger?'#38a169':e.nb_lbc?'#ed8936':'#3182ce';
+              const rk  = i===0?'rank-1':i===1?'rank-2':i===2?'rank-3':'rank-n';
+              const tb  = e.type==='particulier'?'<span class="tag-part">particulier</span>'
+                :e.type==='promoteur'?'<span class="badge" style="background:#e0f2fe;color:#0369a1">promoteur</span>'
+                :'<span style="color:#718096;font-size:11px">agence</span>';
+              return `<tr onclick="showEntite('${encodeURIComponent(e.nom)}')">
+                <td><span class="rank ${rk}">${i+1}</span></td>
+                <td><span class="ent-name">${e.nom}</span></td>
+                <td><strong>${e.nb_mandats}</strong></td>
+                <td><div class="pdm-wrap"><div class="pdm-bg"><div class="pdm-fill" style="width:${pdm}%;background:${col}"></div></div><span class="pdm-pct" style="color:${col}">${pdm}%</span></div></td>
+                <td>${e.nb_biens}</td>
+                <td>${e.nb_lbc?`<span class="badge b-lbc">${e.nb_lbc}</span>`:'<span class="dimmed">—</span>'}</td>
+                <td>${e.nb_seloger?`<span class="badge b-sl">${e.nb_seloger}</span>`:'<span class="dimmed">—</span>'}</td>
+                <td>${tb}</td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+function setSort(col) {
+  if (sortCol===col) sortAsc=!sortAsc; else { sortCol=col; sortAsc=false; }
+  renderZone();
+}
+
+// ── Vue entité ───────────────────────────────────────────────────────────────
+async function showEntite(encodedNom) {
+  document.getElementById('main').innerHTML =
+    '<div class="empty" style="margin-top:120px">Chargement…</div>';
+  try {
+    const e = await apiFetch('/entite/'+encodedNom);
+    const nom = decodeURIComponent(encodedNom);
+    const zonesTriees = [...(e.zones||[])].sort((a,b)=>b.nb_mandats-a.nb_mandats);
+    const totalMandats = zonesTriees.reduce((s,z)=>s+z.nb_mandats,0);
+    const totalBiens   = zonesTriees.reduce((s,z)=>s+z.nb_biens,0);
+    const initials = nom.replace(/[^A-Za-zÀ-ÿ ]/g,'').split(' ').filter(w=>w.length>1).slice(0,2).map(w=>w[0].toUpperCase()).join('')||nom.slice(0,2).toUpperCase();
+    const portailBadge = e.sur_lbc&&e.sur_seloger
+      ?'<span class="badge b-both">LBC + SeLoger</span>'
+      :e.sur_lbc?'<span class="badge b-lbc">LBC</span>'
+      :'<span class="badge b-sl">SeLoger</span>';
+
+    document.getElementById('main').innerHTML = `
+      <div class="page-head">
+        <div>
+          <div style="color:#3182ce;cursor:pointer;font-size:13px;margin-bottom:10px"
+               onclick="selectZone('${currentCp}','${esc(currentCommune)}')">← ${currentCommune} ${currentCp}</div>
+          <div style="display:flex;align-items:center;gap:14px">
+            <div style="width:48px;height:48px;border-radius:50%;background:#ebf8ff;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:700;color:#2b6cb0;flex-shrink:0">${initials}</div>
+            <div>
+              <div class="page-title">${e.nom}</div>
+              <div class="page-sub" style="display:flex;gap:8px;align-items:center;margin-top:4px">
+                ${portailBadge}
+                <span style="color:#a0aec0">·</span><span>${e.type||'agence'}</span>
+                ${e.siren?`<span style="color:#a0aec0">·</span><span style="font-family:monospace;font-size:11px;color:#718096">SIREN ${e.siren}</span>`:''}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="content">
+        <div class="cards" style="grid-template-columns:repeat(4,1fr)">
+          <div class="card"><div class="card-lbl">Mandats total</div><div class="card-val">${totalMandats}</div><div class="card-sub">toutes zones confondues</div></div>
+          <div class="card"><div class="card-lbl">Biens uniques</div><div class="card-val">${totalBiens}</div><div class="card-sub">après déduplication</div></div>
+          <div class="card"><div class="card-lbl">Zones couvertes</div><div class="card-val">${zonesTriees.length}</div><div class="card-sub">codes postaux actifs</div></div>
+          <div class="card"><div class="card-lbl">Zone principale</div><div class="card-val" style="font-size:18px">${zonesTriees[0]?.commune||'—'}</div><div class="card-sub">${zonesTriees[0]?.cp||''}</div></div>
+        </div>
+        <div class="panel" style="margin-bottom:14px">
+          <div class="p-head">
+            <span class="p-title">Zones de travail — classées par présence</span>
+            <span style="font-size:11px;color:#a0aec0">${zonesTriees.length} zone${zonesTriees.length>1?'s':''}</span>
+          </div>
+          <table>
+            <thead><tr><th style="width:40px">#</th><th>Zone</th><th>Mandats</th><th style="min-width:160px">Présence sur la zone</th><th>Biens</th><th>LBC</th><th>SeLoger</th></tr></thead>
+            <tbody>
+              ${zonesTriees.map((z,i)=>{
+                const part = z.total_mandats_zone?Math.round(z.nb_mandats/z.total_mandats_zone*100):0;
+                const col  = z.nb_lbc&&z.nb_seloger?'#38a169':z.nb_lbc?'#ed8936':'#3182ce';
+                const rk   = i===0?'rank-1':i===1?'rank-2':i===2?'rank-3':'rank-n';
+                return `<tr>
+                  <td><span class="rank ${rk}">${i+1}</span></td>
+                  <td><span class="ent-name" onclick="selectZone('${z.cp}','${esc(z.commune)}')">${z.commune}</span> <span style="color:#a0aec0;font-size:11px">${z.cp}</span></td>
+                  <td><strong>${z.nb_mandats}</strong> <span style="color:#a0aec0;font-size:11px">/ ${z.total_mandats_zone||'?'} total</span></td>
+                  <td><div class="pdm-wrap"><div class="pdm-bg"><div class="pdm-fill" style="width:${part}%;background:${col}"></div></div><span class="pdm-pct" style="color:${col}">${part}%</span></div></td>
+                  <td>${z.nb_biens}</td>
+                  <td>${z.nb_lbc?`<span class="badge b-lbc">${z.nb_lbc}</span>`:'<span class="dimmed">—</span>'}</td>
+                  <td>${z.nb_seloger?`<span class="badge b-sl">${z.nb_seloger}</span>`:'<span class="dimmed">—</span>'}</td>
+                </tr>`;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>
+        <div class="panel">
+          <div class="p-head"><span class="p-title">Annonces actives (top 20)</span></div>
+          <table>
+            <thead><tr><th>Titre</th><th>CP</th><th>Prix</th><th>Surface</th><th>DPE</th><th>Source</th></tr></thead>
+            <tbody>
+              ${(e.annonces||[]).map(a=>`<tr>
+                <td>${a.titre||'—'}</td><td>${a.cp}</td>
+                <td>${a.prix?fmt(a.prix)+' €':'<span class="dimmed">—</span>'}</td>
+                <td>${a.surface?a.surface+'m²':'<span class="dimmed">—</span>'}</td>
+                <td>${a.dpe||'<span class="dimmed">—</span>'}</td>
+                <td><span class="badge ${a.source==='lbc'?'b-lbc':'b-sl'}">${a.source}</span></td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>`;
+  } catch(err) {
+    document.getElementById('main').innerHTML =
+      `<div class="api-err">Erreur chargement entité : ${err.message}</div>`;
+  }
+}
+
+// ── Run modal ────────────────────────────────────────────────────────────────
+function openRunModal(cp, commune) {
+  document.getElementById('r-cp').value      = cp||'';
+  document.getElementById('r-commune').value = commune||'';
+  document.getElementById('r-slcode').value  = '';
+  document.getElementById('r-source').value  = '';
+  document.getElementById('run-form').style.display = 'block';
+  document.getElementById('run-log').style.display  = 'none';
+  document.getElementById('log-content').innerHTML  = '';
+  const btn = document.getElementById('run-action-btn');
+  btn.textContent='▶ Lancer'; btn.disabled=false; btn.onclick=startRun;
+  document.getElementById('run-overlay').classList.add('open');
+}
+function closeRunModal() { document.getElementById('run-overlay').classList.remove('open'); }
+
+async function startRun() {
+  const cp      = document.getElementById('r-cp').value.trim();
+  const commune = document.getElementById('r-commune').value.trim();
+  const slCode  = document.getElementById('r-slcode').value.trim();
+  const source  = document.getElementById('r-source').value;
+  if (!cp||!commune) { alert('Code postal et commune requis'); return; }
+
+  document.getElementById('run-form').style.display = 'none';
+  document.getElementById('run-log').style.display  = 'block';
+  const btn = document.getElementById('run-action-btn');
+  btn.textContent='En cours…'; btn.disabled=true;
+
+  const log = document.getElementById('log-content');
+  const add = (line) => {
+    const d = document.createElement('div');
+    d.className = line.includes('✓')||line.includes('OK')||line.includes('Terminé')?'l-ok'
+      :line.includes('✗')||line.includes('ERR')||line.includes('ECHEC')?'l-err'
+      :line.includes('⚠')||line.includes('WARN')?'l-warn':'';
+    d.textContent=line; log.appendChild(d); log.scrollTop=log.scrollHeight;
+  };
+
+  try {
+    const resp = await fetch(`${API}/run`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ cp, commune,
+        ...(slCode?{sl_code:slCode}:{}), ...(source?{source}:{}) })
+    });
+    const reader=resp.body.getReader(), decoder=new TextDecoder();
+    let buf='';
+    while (true) {
+      const {done,value}=await reader.read();
+      if (done) break;
+      buf+=decoder.decode(value,{stream:true});
+      const lines=buf.split('\n'); buf=lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const payload=JSON.parse(line.slice(6));
+        if (payload==='__DONE__') {
+          add('✓ Pipeline terminé');
+          btn.textContent='Voir les résultats'; btn.disabled=false;
+          btn.onclick=()=>{ closeRunModal(); selectZone(cp,commune); loadZones(); };
+          return;
+        }
+        add(payload);
+      }
+    }
+  } catch(e) {
+    add('✗ Erreur connexion API : '+e.message);
+    add('  Vérifiez que python3 api.py est lancé.');
+    btn.textContent='Fermer'; btn.disabled=false; btn.onclick=closeRunModal;
+  }
+}
+
+// ── Utils ────────────────────────────────────────────────────────────────────
+async function apiFetch(path) {
+  const r = await fetch(API+path);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+function fmt(n) { return n?.toLocaleString('fr-FR')?? '—'; }
+function esc(s) { return (s||'').replace(/'/g,"\\'"); }
+
+loadZones();
+</script>
+</body>
+</html>

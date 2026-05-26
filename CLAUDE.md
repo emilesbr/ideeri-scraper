@@ -30,43 +30,55 @@ ideeri/
 ├── CLAUDE.md               # Ce fichier — lu à chaque session
 ├── README.md               # Vue d'ensemble GitHub
 │
-├── scrape_givors.py        # Scraper câblé Givors (69700) — modèle à copier par commune
-├── test_ecully.py          # Scraper de test Écully (69130) — a validé les paramètres SB
-├── test_scrapingbee.py     # Benchmark des paramètres ScrapingBee (4 tests SL + 4 LBC)
+├── pipeline.py             # Point d'entrée unique : scrape + transform + check + reset
+├── transform.py            # Cœur du pipeline : stg_* → annonces + entites + runs
+├── api.py                  # API Flask → localhost:5000
+├── dashboard.html          # Dashboard SPA — ouvrir dans le navigateur
 │
-├── transform.py            # Transformateur stg_* → annonces + entites + runs (PIPELINE PRINCIPAL)
+├── scrape_givors.py        # LEGACY — remplacé par pipeline.py run
+├── test_ecully.py          # Validation des paramètres ScrapingBee (référence)
+├── test_scrapingbee.py     # Benchmark 8 combinaisons de paramètres (A–H)
 │
 ├── migration_v2.sql        # SQL idempotent : crée runs, entites, alter annonces/stg_*
-├── migration_stg_tables.sql # SQL intermédiaire (peut être ignoré — précède migration_v2)
+├── migration_stg_tables.sql # SQL intermédiaire (précède migration_v2)
 │
-├── analyser_local.py       # Analyse des HTML capturés en local (débogage)
-├── debug_page.py           # Utilitaire de debug d'une page HTML brute
-├── extractor_exhaustive.py # Extracteur exhaustif (brouillon, remplacé par transform.py)
-├── scraper_hybride.py      # Brouillon de scraper hybride (remplacé par scrape_givors.py)
-├── capture_seloger.html    # Capture HTML SeLoger de référence (débogage)
+├── analyser_local.py       # Debug HTML local
+├── debug_page.py           # Debug page HTML brute
+├── extractor_exhaustive.py # Brouillon (remplacé par transform.py)
+├── scraper_hybride.py      # Brouillon (remplacé par pipeline.py)
+├── capture_seloger.html    # Capture HTML SeLoger référence (debug)
 │
-└── debug/                  # HTML bruts des requêtes ScrapingBee (gitignorés)
-    ├── seloger_givors_p1.html
-    ├── lbc_givors_p1.html
-    └── ...
+└── debug/                  # HTML bruts ScrapingBee (gitignorés — vider régulièrement)
 ```
 
 ### Rôle détaillé des fichiers actifs
 
-**`scrape_givors.py`** — Scraper opérationnel pour Givors (69700). Hardcodé : 4 pages SeLoger
-+ 4 pages LBC en parallèle (max 5 workers ThreadPoolExecutor). Insère dans `stg_lbc` et
-`stg_seloger` avec les métadonnées dans `data_brute._meta`. C'est le modèle à copier pour
-toute nouvelle commune.
-
-**`test_ecully.py`** — Script de référence qui a validé les paramètres ScrapingBee (stealth
-pour LBC, premium pour SeLoger). Architecture identique à `scrape_givors.py`.
-
-**`test_scrapingbee.py`** — Benchmark de 8 combinaisons de paramètres (A–H). À relancer si
-la clé API change ou si un portail modifie son anti-bot.
+**`pipeline.py`** — **Point d'entrée principal.** Orchestre scraping + transform en une seule
+commande. Sous-commandes : `run`, `scrape`, `transform`, `check`, `status`, `reset`.
+Gère les URL LBC et SeLoger, le parallélisme (ThreadPoolExecutor), et les confirmations
+interactives. Usage : `python3 pipeline.py run <cp> <commune> [--sl-code ...]`
 
 **`transform.py`** — **Le cœur du pipeline**. Lit `stg_lbc` et `stg_seloger`, normalise les
 annonces, gère les entités sans doublon, le suivi temporel, le DPE/GES, et le matching
-inter-portail. Usage : `python3 transform.py <code_postal> [commune]`
+inter-portail. Appelé par `pipeline.py transform` ou directement :
+`python3 transform.py <code_postal> [commune]`
+
+**`api.py`** — Serveur Flask qui expose les données Supabase en JSON pour le dashboard.
+Endpoints : `GET /api/zones`, `GET /api/zone/<cp>`, `GET /api/entite/<nom>`,
+`GET /api/runs`, `POST /api/run` (SSE streaming). Usage : `python3 api.py`
+
+**`dashboard.html`** — SPA vanilla JS. Sidebar zones, métriques globales (biens, mandats,
+entités, multi-mandats, DPE), classement entités avec part de marché, mouvements de prix,
+vue détail par entité. Ouvrir dans le navigateur après avoir lancé `api.py`.
+
+**`scrape_givors.py`** — Script legacy, remplacé par `pipeline.py run`. Conservé comme
+référence de l'architecture de scraping.
+
+**`test_ecully.py`** — Script de référence qui a validé les paramètres ScrapingBee
+(premium pour SeLoger, premium pour LBC depuis mai 2026).
+
+**`test_scrapingbee.py`** — Benchmark de 8 combinaisons de paramètres (A–H). À relancer si
+la clé API change ou si un portail modifie son anti-bot.
 
 **`migration_v2.sql`** — Migration idempotente à exécuter via le SQL Editor Supabase ou
 l'API Management (PAT requis, voir section 10). Crée `runs`, `entites`, alters `annonces`
@@ -232,15 +244,15 @@ timeout = 45  # secondes
 ```python
 params = {
     "render_js":       "true",   # SPA React — nécessite rendu JS
-    "stealth_proxy":   "true",   # Contourne Datadome LBC (~75 crédits/page)
+    "premium_proxy":   "true",   # Contourne Datadome LBC (validé mai 2026)
     "wait":            "4000",   # 4s d'attente après chargement JS
-    "block_resources": "false",  # Garder toutes les ressources
+    "block_resources": "true",   # Bloquer ressources non nécessaires
 }
-timeout = 120  # secondes (stealth est lent)
+timeout = 120  # secondes
 ```
 
-**Attention** : `premium_proxy` ne fonctionne pas sur LBC (Datadome différent de SeLoger).
-Seul `stealth_proxy` bypass Datadome LBC.
+**Note** : passage de `stealth_proxy` à `premium_proxy` en mai 2026 (Rive-de-Gier 42800).
+Si LBC retourne des erreurs Datadome, revenir à `stealth_proxy` + `block_resources: false`.
 
 ### Coût estimé par commune
 
@@ -254,9 +266,10 @@ Quota mensuel starter ScrapingBee : 1 000 crédits → 3–5 communes/mois selon
 
 ### Erreurs anti-bot connues
 
-- **LBC 520** : URL avec `__` (double underscore). Utiliser
-  `/cl/ventes_immobilieres/cp_<ville>_<cp>/real_estate_type:2/p-N`
-  et **non** `/recherche?locations=<ville>_<cp>__<lat>_<lon>_<radius>`.
+- **LBC 520** : URL avec `__` (double underscore). L'ancien format
+  `/recherche?locations=<ville>_<cp>__<lat>_<lon>_<radius>` provoque ce bug.
+  Format actuel dans `pipeline.py` : `/recherche?category=9&locations=<Commune>_<cp>&real_estate_type=2`
+  (sans `__`). Fonctionne aussi : `/cl/ventes_immobilieres/cp_<ville>_<cp>/real_estate_type:2`
 - **SeLoger 404** : l'ancien format `/achat/appartements-maisons/<slug>/` est obsolète.
   Utiliser `classified-search?locations=<code_commune_ou_cp>`.
 - **LBC HTTP 500 sur une page** : intermittent, relancer avec `wait=5000`.
@@ -404,31 +417,30 @@ Clé de dédup par priorité décroissante :
 
 ---
 
-## 7. Résultats Givors — run de référence (mai 2026)
+## 7. Résultats Givors — état au 26 mai 2026 (12 runs)
 
 - **Commune** : Givors, 69700
 - **Scraping** : 4 pages SeLoger (30/page) + 4 pages LBC (35/page)
-- **Annonces actives** : 231 (112 LBC + 119 SeLoger)
-- **Entités identifiées** : 79
-- **Biens uniques** : 121
-  - LBC seul : 31 | SeLoger seul : 46 | les deux : 44 (36.4%)
-  - 33 paires intra-entité (LBC↔SeLoger même agence), score médian 1.0
-  - 40 clusters multi-entités (131 annonces), 0 violation DPE N+std
-- **Biens en multi-mandat** : 40/121 (33.1%) — même bien, agences différentes
-- **Doublons internes** : 19/121 — même agence, même bien sur les deux portails
-- **Couverture DPE** : ~96% (VEFA LBC → DPE=N automatique)
-- **Couverture GES** : 28% — LBC uniquement
+- **Annonces actives** : 240
+- **Entités identifiées** : 114
+- **Biens uniques** : 136
+  - Multi-mandats : 35/136 (26%) — même bien, agences différentes
+  - Couverture DPE : ~90% | GES : ~28% (LBC uniquement)
 
-Top entités par nb_annonces_actives :
-| Entité | Biens | LBC | SeLoger |
-|--------|-------|-----|---------|
-| GUY HOQUET L'IMMOBILIER | 19 | – | 19 |
-| CENTURY 21 HESTIA LDI   | 17 | 8 | 9  |
-| LES CLÉS D'ALEXIA Lyon  | 11 | – | 11 |
-| PATRIMMO SERVICE        | 11 | 11 | – |
-| LEONE IMMOBILIER        | 8  | 5 | 8  |
+Top entités (mandats = biens uniques par entité) :
+| Entité | Mandats | LBC | SeLoger |
+|--------|---------|-----|---------|
+| GUY HOQUET L'IMMOBILIER   | 15 | –  | 16 |
+| LES CLÉS D'ALEXIA Lyon    | 11 | –  | 11 |
+| CENTURY 21 HESTIA LDI     | 10 | –  | 10 |
+| PATRIMMO SERVICE          | 9  | 11 | –  |
+| LEONE IMMOBILIER          | 8  | 5  | 8  |
 
 Note : CENTURY 21 HESTIA LDI et CENTURY 21 HESTIA LDI GRIGNY = même SIREN → une seule entité.
+
+**Zones disponibles en base** : 69700 Givors (240 ann) + 42800 Rive-de-Gier (120 ann).
+Les deux communes sont adjacentes — plusieurs agences opèrent sur les deux (Leone, Pilat…).
+Le pipeline sépare par CP exact ; le portail les agrège géographiquement.
 
 ---
 
@@ -436,34 +448,37 @@ Note : CENTURY 21 HESTIA LDI et CENTURY 21 HESTIA LDI GRIGNY = même SIREN → u
 
 ### Scraper une nouvelle commune
 
-1. Trouver le code SeLoger : rechercher la commune sur seloger.com, copier le paramètre
-   `locations=` dans l'URL (ex : `AD08FR28776` pour Givors, `AD08FR28766` pour Écully).
-   Le code postal direct fonctionne aussi (ex : `locations=69700`).
+```bash
+python3 pipeline.py run <cp> <commune> [--sl-code AD08FRXXXXX] [--source lbc|seloger]
+```
 
-2. Construire l'URL LBC : format `/cl/ventes_immobilieres/cp_<ville>_<cp>/real_estate_type:2`
-   Exemple : `cp_givors_69700`, `cp_saint-priest_69800`. **Ne jamais utiliser
-   `/recherche?locations=` qui contient `__` et provoque un HTTP 520.**
+- `--sl-code` : code SeLoger optionnel (ex : `AD08FR28776` pour Givors). Sans ce paramètre,
+  le pipeline utilise le CP directement dans l'URL SeLoger.
+- `--source` : pour scraper un seul portail (utile pour tests ou reruns partiels).
 
-3. Copier `scrape_givors.py` → `scrape_<commune>.py`, modifier les 6 constantes :
-   ```python
-   COMMUNE      = "Saint-Priest"
-   CODE_POSTAL  = "69800"
-   NB_PAGES_SL  = 3   # ceil(nb_annonces_seloger / 30), vérifier sur le site
-   NB_PAGES_LBC = 3   # ceil(nb_annonces_lbc / 35)
-   SL_BASE      = "https://www.seloger.com/classified-search?...&locations=AD08FRXXXXX&..."
-   LBC_BASE     = "https://www.leboncoin.fr/cl/ventes_immobilieres/cp_saint-priest_69800/real_estate_type:2"
-   ```
+**Trouver le code SeLoger** : chercher la commune sur seloger.com, copier le paramètre
+`locations=` dans l'URL. Le code postal direct fonctionne aussi (`locations=69700`).
 
-4. Lancer :
-   ```bash
-   python3 scrape_<commune>.py
-   python3 transform.py <code_postal> <commune>
-   ```
+**Estimer le nombre de pages** : vérifier sur les portails avant de lancer.
+- SeLoger : ceil(nb_annonces / 30) pages
+- LBC : ceil(nb_annonces / 35) pages
 
-### Transform seul (données déjà dans stg_*)
+### Commandes pipeline complètes
 
 ```bash
-python3 transform.py 69700 Givors
+python3 pipeline.py check                          # Quota ScrapingBee + derniers runs
+python3 pipeline.py status <cp>                    # État d'une zone
+python3 pipeline.py scrape <cp> <commune>          # Scraping seul
+python3 pipeline.py transform <cp> <commune>       # Transform seul (stg_* déjà rempli)
+python3 pipeline.py run <cp> <commune>             # Scrape + transform
+python3 pipeline.py reset <cp>                     # Réinitialise données d'une zone
+```
+
+### Dashboard
+
+```bash
+python3 api.py          # API → http://localhost:5000
+# Ouvrir dashboard.html dans le navigateur
 ```
 
 Pipeline exécuté par `run_transform()` :
@@ -551,17 +566,33 @@ print(f'{n} paires intra, {cl[\"n_clusters\"]} clusters cross')
 
 ---
 
-## 9. Prochaines étapes
+## 9. Bugs connus et limitations
+
+**`nb_annonces_actives` dans `entites` n'agrège pas les CPs** :
+Le compteur est écrasé à chaque run du transform sur un CP donné. Pour une entité présente
+sur plusieurs CPs (ex : AGENCE PILAT sur 69700 et 42800), la valeur reflète uniquement le
+CP du dernier run. Fix attendu : calculer depuis `annonces` en agrégeant tous les CPs, ou
+cumuler dans `historique_activite`.
+
+**Pattern multi-CP** :
+Les agences locales opèrent souvent sur des communes adjacentes avec des CPs différents
+(ex : Givors 69700 / Rive-de-Gier 42800). Le portail agrège géographiquement, le pipeline
+sépare par CP exact. Pour le volume complet d'une agence, additionner ses mandats sur tous
+ses `codes_postaux` dans la table `entites`.
+
+**`processed` dans `stg_*`** : le flag `processed=true` n'est pas positionné après
+transform — toutes les lignes restent `processed=false`. Non bloquant mais à implémenter.
+
+---
+
+## 10. Prochaines étapes
 
 ### Court terme
-- **Scraper paramétrique** : créer `scraper.py <code_postal> <commune> <sl_locations_code>`
-  pour éviter de dupliquer `scrape_givors.py` par commune.
+- **Fix `nb_annonces_actives`** : agréger sur tous les CPs dans `transform.py`.
 - **GES SeLoger** : absent de la SERP. Chercher dans la page détail annonce individuelle
   (`/annonces/achat/<ville>/<id>.htm`) ou via l'API SeLoger non documentée.
-- **Deuxième run Givors** : scraping + transform dans ~2 semaines pour obtenir les premières
-  évolutions (nouvelles annonces, disparitions, baisses de prix).
-- **processed=true** dans `stg_*` après chaque transform (actuellement non implémenté dans
-  `run_transform()`).
+- **Rive-de-Gier (42800)** : zone déjà en base (120 ann), intégrer dans le dashboard.
+- **`processed=true`** dans `stg_*` après chaque transform.
 
 ### Moyen terme
 - **Croisement DVF** : données DGFiP sur data.gouv.fr, join sur (type_bien, surface±10m²,
@@ -569,11 +600,10 @@ print(f'{n} paires intra, {cl[\"n_clusters\"]} clusters cross')
 - **Croisement ADEME DPE** : API `https://data.ademe.fr/datasets/dpe-v2-logements-existants`,
   valider cohérence DPE annonce vs DPE officiel.
 - **Multi-communes** : pipeline batch avec gestion du quota ScrapingBee mensuel.
-- **Dashboard analytique** : Metabase ou Supabase Studio sur les requêtes standard.
 
 ---
 
-## 10. Infra et accès
+## 11. Infra et accès
 
 ### Variables d'environnement (`.env`)
 ```

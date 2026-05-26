@@ -40,7 +40,7 @@ def _warn(msg): print(f"  {Y}⚠️ {RST} {msg}")
 
 SB_URL     = "https://app.scrapingbee.com/api/v1/"
 SL_PARAMS  = {"render_js": "false", "premium_proxy": "true", "country_code": "fr"}
-LBC_PARAMS = {"render_js": "true",  "stealth_proxy": "true", "wait": "4000", "block_resources": "false"}
+LBC_PARAMS = {"render_js": "true",  "premium_proxy": "true", "wait": "4000", "block_resources": "true"}
 DEBUG      = Path(__file__).parent / "debug"
 DEBUG.mkdir(exist_ok=True)
 
@@ -105,10 +105,17 @@ def _parse_seloger(html: str) -> tuple[list, dict, int]:
 # ---------------------------------------------------------------------------
 
 def _lbc_base(commune: str, cp: str) -> str:
-    slug = unicodedata.normalize("NFKD", commune.lower())
+    # On nettoie le nom de la commune pour le paramètre d'URL (ex: "Rive-de-Gier" -> "Rive-de-Gier")
+    slug = unicodedata.normalize("NFKD", commune) # On garde les majuscules et tirets d'origine pour leur moteur
     slug = "".join(c for c in slug if not unicodedata.combining(c))
-    slug = re.sub(r"[^a-z0-9]+", "-", slug).strip("-")
-    return f"https://www.leboncoin.fr/cl/ventes_immobilieres/cp_{slug}_{cp}/real_estate_type:2"
+    
+    # On utilise le nouveau format d'URL globale de recherche par Code Postal
+    return (
+        "https://www.leboncoin.fr/recherche"
+        "?category=9"
+        f"&locations={slug}_{cp}"
+        "&real_estate_type=2"  # 2 = Appartement
+    )
 
 
 def _sl_base(code: str) -> str:
