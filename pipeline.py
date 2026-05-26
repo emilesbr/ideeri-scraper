@@ -121,13 +121,17 @@ def _sl_base(code: str) -> str:
 
 def _insert_stg(table: str, commune: str, cp: str, page: int,
                 url: str, raw: dict, nb: int, sb) -> bool:
+    now = datetime.now(timezone.utc).isoformat()
     payload = {
-        "date_scrap": datetime.now(timezone.utc).isoformat(),
+        "scraped_at":  now,
+        "code_postal": cp,
+        "page":        page,
+        "url_source":  url,
+        "nb_annonces": nb,
         "data_brute": {
             "_meta": {
                 "commune": commune, "code_postal": cp, "page": page,
-                "url_source": url, "nb_annonces": nb,
-                "scraped_at": datetime.now(timezone.utc).isoformat(),
+                "url_source": url, "nb_annonces": nb, "scraped_at": now,
             },
             **raw,
         },
