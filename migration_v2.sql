@@ -105,8 +105,8 @@ CREATE INDEX IF NOT EXISTS idx_annonces_entite
 CREATE INDEX IF NOT EXISTS idx_annonces_premiere_obs
     ON annonces (date_premiere_obs DESC);
 
-CREATE INDEX IF NOT EXISTS idx_annonces_id_unique
-    ON annonces (id_unique_bien) WHERE id_unique_bien IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_annonces_bien_id
+    ON annonces (bien_id) WHERE bien_id IS NOT NULL;
 
 
 -- =============================================================

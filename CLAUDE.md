@@ -585,7 +585,7 @@ SUPA_KEY=          # Clé anon Supabase (suffisante pour INSERT/SELECT/UPDATE)
 ### PAT Supabase (opérations DDL uniquement)
 Pour exécuter des migrations SQL via l'API Management :
 ```python
-PAT = "sbp_c9acbafef178ae005ffaa339e2fabba72a23a2a3"
+PAT = "sbp_VOTRE_PAT_ICI"  # Ne jamais committer — passer en variable locale de session
 url = "https://api.supabase.com/v1/projects/qhehngzoeocjqpojymso/database/query"
 headers = {"Authorization": f"Bearer {PAT}", "Content-Type": "application/json"}
 # Retourne HTTP 201 (pas 200) pour une DDL réussie
