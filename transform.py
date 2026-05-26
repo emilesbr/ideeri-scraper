@@ -44,16 +44,19 @@ def entity_signature(siren: str | None, type_entite: str, nom: str, cp: str) -> 
     normed = normalize_name(nom)
     return f"nom_{normed}" if normed else f"nom_{hashlib.md5(nom.encode()).hexdigest()[:8]}"
 
-def id_unique_bien(type_bien: str, surface, code_postal: str, prix) -> str:
-    s = round(float(surface or 0) / 5) * 5
-    p = round(float(prix or 0) / 10_000) * 10_000
-    key = f"{type_bien}|{s}|{code_postal}|{p}"
-    return hashlib.md5(key.encode()).hexdigest()[:16]
-
-
 def compute_match_score(a: dict, b: dict) -> float:
-    """Score inter-portail 0.0 (pas de match) à 1.0 (match parfait).
-    Conditions obligatoires : CP, type_bien, surface ≤5%, prix ≤10%, entité identique."""
+    """Score unique 0.0 (rejet) ou [0.50, 1.00].
+    Utilisé par intra_entity_match (seuil ≥0.70) et cross_entity_match (seuil ≥0.80).
+
+    Conditions bloquantes (→ 0.0) :
+      - type_bien ou code_postal différents
+      - écart surface > 5% ou prix > 10%
+      - DPE renseigné sur les deux, différents et aucun n'est N
+      - l'un est N et l'autre est dans A–G
+
+    Bonus/malus sur données présentes uniquement (l'absence est neutre).
+    Score max théorique : 1.00 (plafonné).
+    """
     if a.get("code_postal") != b.get("code_postal"):
         return 0.0
     if a.get("type_bien") and b.get("type_bien") and a["type_bien"] != b["type_bien"]:
@@ -61,31 +64,43 @@ def compute_match_score(a: dict, b: dict) -> float:
 
     s1, s2 = a.get("surface"), b.get("surface")
     p1, p2 = a.get("prix_affiche"), b.get("prix_affiche")
-    if not (s1 and s2 and s1 > 0 and s2 > 0 and p1 and p2 and p1 > 0 and p2 > 0):
+    if not (s1 and s2 and float(s1) > 0 and float(s2) > 0
+            and p1 and p2 and float(p1) > 0 and float(p2) > 0):
         return 0.0
 
-    sr = abs(s1 - s2) / max(s1, s2)
-    pr = abs(p1 - p2) / max(p1, p2)
+    sr = abs(float(s1) - float(s2)) / max(float(s1), float(s2))
+    pr = abs(float(p1) - float(p2)) / max(float(p1), float(p2))
     if sr > 0.05 or pr > 0.10:
         return 0.0
 
-    entity_exact = bool(
-        a.get("entite_id") and b.get("entite_id") and a["entite_id"] == b["entite_id"]
-    )
-    if not entity_exact:
-        na = normalize_name(a.get("nom_commercial") or "")
-        nb = normalize_name(b.get("nom_commercial") or "")
-        if not (na and nb and na == nb):
-            return 0.0  # aucune correspondance d'entité → pas de match
+    dpe_a, dpe_b = a.get("dpe"), b.get("dpe")
+    _STD = {"A", "B", "C", "D", "E", "F", "G"}
+    if dpe_a and dpe_b and dpe_a != dpe_b:
+        if dpe_a != "N" and dpe_b != "N":
+            return 0.0  # deux DPE standards différents → pas le même bien
+        if (dpe_a == "N" and dpe_b in _STD) or (dpe_b == "N" and dpe_a in _STD):
+            return 0.0  # neuf vs ancien → pas comparable
 
     score = 0.50
-    score += 0.15 * (1 - sr / 0.05)
-    score += 0.15 * (1 - pr / 0.10)
-    if entity_exact:
+    score += 0.20 * (1.0 - sr / 0.05)
+    score += 0.20 * (1.0 - pr / 0.10)
+
+    if dpe_a and dpe_b:
+        score += 0.15 if dpe_a == dpe_b else -0.25
+
+    ges_a, ges_b = a.get("ges"), b.get("ges")
+    if ges_a and ges_b and ges_a == ges_b:
+        score += 0.08
+
+    np_a, np_b = a.get("nb_pieces"), b.get("nb_pieces")
+    if np_a and np_b and int(np_a) == int(np_b):
         score += 0.10
-    if a.get("dpe") and b.get("dpe") and a["dpe"] == b["dpe"]:
-        score += 0.10
-    return min(score, 1.0)
+
+    ya, yb = a.get("annee_construction"), b.get("annee_construction")
+    if ya and yb and abs(int(ya) - int(yb)) <= 5:
+        score += 0.05
+
+    return max(min(score, 1.0), 0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -327,11 +342,6 @@ def upsert_annonce(ann: dict, entite_id: str | None, run_id: int, scraped_at: st
     if ann.get("prix_affiche") and ann.get("surface") and ann["surface"] > 0:
         prix_m2 = round(ann["prix_affiche"] / ann["surface"], 2)
 
-    id_bien = id_unique_bien(
-        ann.get("type_bien", ""), ann.get("surface"),
-        ann.get("code_postal", ""), ann.get("prix_affiche"),
-    )
-
     existing = sb.table("annonces").select(
         "id_annonce, prix_affiche, historique_prix, date_premiere_obs, run_id_premiere_obs, "
         "dpe, ges, energie_budget_min, energie_budget_max, annee_construction, etage"
@@ -357,7 +367,7 @@ def upsert_annonce(ann: dict, entite_id: str | None, run_id: int, scraped_at: st
             "date_derniere_obs":   now,
             "est_active":          True,
             "prix_m2_affiche":     prix_m2,
-            "id_unique_bien":      id_bien,
+            "bien_id":             id_ann,
             "sur_lbc":             ann.get("sur_lbc", False),
             "sur_seloger":         ann.get("sur_seloger", False),
             "historique_prix":     [],
@@ -463,87 +473,85 @@ def update_entity_snapshots(code_postal: str, scraped_at: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Matching inter-portail (passe 2 — fuzzy)
+# Matching — deux appels sur le même score unique
 # ---------------------------------------------------------------------------
 
-def compute_multi_entity_score(a: dict, b: dict) -> float:
-    """Score pour biens identiques publiés par entités différentes.
-    Plus strict que compute_match_score (surface ±3%, prix ±5%, DPE obligatoirement cohérent).
-    Retourne 0.0 si conditions non remplies ou DPE/GES contradictoires."""
-    if a.get("code_postal") != b.get("code_postal"):
-        return 0.0
-    if a.get("type_bien") and b.get("type_bien") and a["type_bien"] != b["type_bien"]:
-        return 0.0
-
-    s1, s2 = a.get("surface"), b.get("surface")
-    p1, p2 = a.get("prix_affiche"), b.get("prix_affiche")
-    if not (s1 and s2 and s1 > 0 and s2 > 0 and p1 and p2 and p1 > 0 and p2 > 0):
-        return 0.0
-
-    sr = abs(float(s1) - float(s2)) / max(float(s1), float(s2))
-    pr = abs(float(p1) - float(p2)) / max(float(p1), float(p2))
-    if sr > 0.03 or pr > 0.05:
-        return 0.0
-
-    # DPE / GES : si les deux sont renseignés et différents → pas le même bien
-    if a.get("dpe") and b.get("dpe") and a["dpe"] != b["dpe"]:
-        return 0.0
-    if a.get("ges") and b.get("ges") and a["ges"] != b["ges"]:
-        return 0.0
-
-    score = 0.40
-    score += 0.15 * (1 - sr / 0.03)
-    score += 0.15 * (1 - pr / 0.05)
-
-    # DPE identique = fort signal
-    if a.get("dpe") and b.get("dpe") and a["dpe"] == b["dpe"]:
-        score += 0.20
-    # GES identique = signal supplémentaire
-    if a.get("ges") and b.get("ges") and a["ges"] == b["ges"]:
-        score += 0.10
-    # Nombre de pièces cohérent
-    if a.get("nb_pieces") and b.get("nb_pieces"):
-        if a["nb_pieces"] == b["nb_pieces"]:
-            score += 0.10
-        else:
-            score -= 0.15  # pénalité — même bien doit avoir le même nb de pièces
-    # Année de construction cohérente (±5 ans)
-    ya, yb = a.get("annee_construction"), b.get("annee_construction")
-    if ya and yb:
-        if abs(int(ya) - int(yb)) <= 5:
-            score += 0.05
-        else:
-            score -= 0.10
-
-    return max(min(score, 1.0), 0.0)
-
-
-def cluster_multi_entity(code_postal: str) -> dict:
-    """
-    Regroupe les annonces représentant le même bien physique, même quand publiées
-    par des entités différentes. Utilise Union-Find pour la transitivité.
-
-    Retourne un dict avec :
-    - n_clusters_multi : clusters avec vraiment plusieurs entités différentes
-    - n_clusters_same  : clusters mono-entité (détection de doublons internes)
-    - n_annonces       : annonces touchées
-    """
-    import uuid
-
+def intra_entity_match(code_postal: str) -> int:
+    """Apparie LBC↔SeLoger de la même entité. Seuil 0.70.
+    Action : sur_lbc/sur_seloger=True, bien_id = id_annonce LBC, match_confidence.
+    Retourne le nombre de paires matchées."""
+    from collections import defaultdict
     fields = (
         "id_annonce, source, type_bien, surface, prix_affiche, nb_pieces, "
-        "dpe, ges, annee_construction, entite_id, nom_commercial, cluster_bien_id"
+        "dpe, ges, annee_construction, entite_id, bien_id"
     )
-    ads = (
-        sb.table("annonces").select(fields)
-        .eq("code_postal", code_postal).eq("est_active", True)
-        .execute().data
-    )
-    if len(ads) < 2:
-        return {"n_clusters_multi": 0, "n_clusters_same": 0, "n_annonces": 0}
+    lbc = (sb.table("annonces").select(fields)
+           .eq("code_postal", code_postal).eq("source", "lbc").eq("est_active", True)
+           .not_.is_("entite_id", "null").execute().data)
+    sl  = (sb.table("annonces").select(fields)
+           .eq("code_postal", code_postal).eq("source", "seloger").eq("est_active", True)
+           .not_.is_("entite_id", "null").execute().data)
+    if not lbc or not sl:
+        return 0
 
-    # Union-Find
-    parent = {a["id_annonce"]: a["id_annonce"] for a in ads}
+    lbc_by_ent: dict = defaultdict(list)
+    sl_by_ent:  dict = defaultdict(list)
+    for a in lbc: lbc_by_ent[a["entite_id"]].append(a)
+    for a in sl:  sl_by_ent[a["entite_id"]].append(a)
+
+    candidates = []
+    for eid in set(lbc_by_ent) & set(sl_by_ent):
+        for a in lbc_by_ent[eid]:
+            for b in sl_by_ent[eid]:
+                s = compute_match_score(a, b)
+                if s >= 0.70:
+                    candidates.append((s, a, b))
+    candidates.sort(key=lambda x: -x[0])
+
+    matched_lbc: set[str] = set()
+    matched_sl:  set[str] = set()
+    n = 0
+    for score, a, b in candidates:
+        if a["id_annonce"] in matched_lbc or b["id_annonce"] in matched_sl:
+            continue
+        lbc_id = a["id_annonce"]
+        conf = round(score, 3)
+        sb.table("annonces").update({
+            "sur_seloger": True, "match_confidence": conf, "bien_id": lbc_id,
+        }).eq("id_annonce", lbc_id).execute()
+        sb.table("annonces").update({
+            "sur_lbc": True, "match_confidence": conf, "bien_id": lbc_id,
+        }).eq("id_annonce", b["id_annonce"]).execute()
+        matched_lbc.add(lbc_id)
+        matched_sl.add(b["id_annonce"])
+        n += 1
+    return n
+
+
+def cross_entity_match(code_postal: str) -> dict:
+    """Regroupe les biens identiques publiés par entités différentes. Seuil 0.80.
+    Union-Find. Action : cluster_bien_id + bien_id partagés sur tous les membres.
+    Retourne {n_clusters, n_annonces}."""
+    import uuid
+    fields = (
+        "id_annonce, source, type_bien, surface, prix_affiche, nb_pieces, "
+        "dpe, ges, annee_construction, entite_id, cluster_bien_id"
+    )
+    ads = (sb.table("annonces").select(fields)
+           .eq("code_postal", code_postal).eq("est_active", True)
+           .not_.is_("entite_id", "null").execute().data)
+    if len(ads) < 2:
+        return {"n_clusters": 0, "n_annonces": 0}
+
+    _STD_DPE = {"A", "B", "C", "D", "E", "F", "G"}
+
+    def _dpe_cat(dpe):
+        if dpe == "N":   return "N"
+        if dpe in _STD_DPE: return "std"
+        return "none"
+
+    parent   = {a["id_annonce"]: a["id_annonce"] for a in ads}
+    root_dpe = {a["id_annonce"]: _dpe_cat(a.get("dpe")) for a in ads}
 
     def find(x: str) -> str:
         while parent[x] != x:
@@ -552,108 +560,60 @@ def cluster_multi_entity(code_postal: str) -> dict:
         return x
 
     def union(x: str, y: str) -> None:
-        parent[find(x)] = find(y)
+        rx, ry = find(x), find(y)
+        if rx == ry:
+            return
+        dx, dy = root_dpe[rx], root_dpe[ry]
+        # Ne jamais fusionner un cluster VEFA (N) avec un cluster existant (std)
+        if (dx == "N" and dy == "std") or (dx == "std" and dy == "N"):
+            return
+        parent[rx] = ry
+        # Propager la catégorie DPE la plus précise au nouveau root
+        if dx == "N" or dy == "N":
+            root_dpe[ry] = "N"
+        elif dx == "std" or dy == "std":
+            root_dpe[ry] = "std"
 
-    # Construire toutes les paires O(n²)
     for i, a in enumerate(ads):
         for b in ads[i + 1:]:
-            if compute_multi_entity_score(a, b) >= 0.65:
+            if a.get("entite_id") == b.get("entite_id"):
+                continue
+            if compute_match_score(a, b) >= 0.80:
                 union(a["id_annonce"], b["id_annonce"])
 
-    # Regrouper par root, garder seulement les clusters ≥ 2 membres
     ad_map = {a["id_annonce"]: a for a in ads}
     roots: dict[str, list[str]] = {}
     for a in ads:
-        r = find(a["id_annonce"])
-        roots.setdefault(r, []).append(a["id_annonce"])
+        roots.setdefault(find(a["id_annonce"]), []).append(a["id_annonce"])
 
-    n_multi = n_same = n_touched = 0
-    for root, members in roots.items():
+    n_clusters = n_touched = 0
+    for members in roots.values():
         if len(members) < 2:
             continue
-
-        # Identifier si plusieurs entités réellement différentes
-        entity_ids  = {ad_map[m]["entite_id"] for m in members if ad_map[m].get("entite_id")}
-        entity_norms = {normalize_name(ad_map[m].get("nom_commercial") or "") for m in members}
-        entity_norms.discard("")
-        multi_entity = len(entity_ids) > 1 or len(entity_norms) > 1
-
-        # Réutiliser un cluster_bien_id existant ou en créer un
-        existing = {ad_map[m].get("cluster_bien_id") for m in members}
-        existing.discard(None)
+        existing = {ad_map[m].get("cluster_bien_id") for m in members} - {None}
         cluster_id = next(iter(existing), None) or uuid.uuid4().hex[:16]
 
-        # Score moyen du cluster (calcul approximatif sur les paires)
         scores = []
         mlist = list(members)
-        for i2, mid_a in enumerate(mlist):
-            for mid_b in mlist[i2 + 1:]:
-                s = compute_multi_entity_score(ad_map[mid_a], ad_map[mid_b])
+        for i2, ma in enumerate(mlist):
+            for mb in mlist[i2 + 1:]:
+                s = compute_match_score(ad_map[ma], ad_map[mb])
                 if s > 0:
                     scores.append(s)
-        avg_conf = round(sum(scores) / len(scores), 3) if scores else 0.65
+        avg_conf = round(sum(scores) / len(scores), 3) if scores else 0.80
 
         for mid in members:
             if ad_map[mid].get("cluster_bien_id") != cluster_id:
                 sb.table("annonces").update({
-                    "cluster_bien_id":   cluster_id,
+                    "cluster_bien_id":    cluster_id,
                     "cluster_confidence": avg_conf,
+                    "bien_id":            cluster_id,
                 }).eq("id_annonce", mid).execute()
 
-        if multi_entity:
-            n_multi += 1
-        else:
-            n_same += 1
-        n_touched += len(members)
+        n_clusters += 1
+        n_touched  += len(members)
 
-    return {"n_clusters_multi": n_multi, "n_clusters_same": n_same, "n_annonces": n_touched}
-
-def fuzzy_match_cross_portal(code_postal: str, scraped_at: str) -> int:
-    """
-    Associe les annonces LBC et SeLoger représentant le même bien.
-    Pour chaque paire matchée : met sur_seloger/sur_lbc=True, aligne id_unique_bien,
-    enregistre match_confidence. Retourne le nombre de nouveaux matches.
-    """
-    fields = "id_annonce, source, code_postal, type_bien, surface, prix_affiche, entite_id, nom_commercial, dpe, id_unique_bien, match_confidence"
-    lbc = sb.table("annonces").select(fields).eq("code_postal", code_postal).eq("source", "lbc").eq("est_active", True).execute().data
-    sl  = sb.table("annonces").select(fields).eq("code_postal", code_postal).eq("source", "seloger").eq("est_active", True).execute().data
-
-    if not lbc or not sl:
-        return 0
-
-    # Construire toutes les paires candidates avec score
-    candidates: list[tuple[float, str, str, dict, dict]] = []
-    for a in lbc:
-        for b in sl:
-            score = compute_match_score(a, b)
-            if score > 0:
-                candidates.append((score, a["id_annonce"], b["id_annonce"], a, b))
-    candidates.sort(key=lambda x: -x[0])
-
-    matched_lbc: set[str] = set()
-    matched_sl:  set[str] = set()
-    n_matches = 0
-
-    for score, lbc_id, sl_id, a, b in candidates:
-        if lbc_id in matched_lbc or sl_id in matched_sl:
-            continue
-        shared_id = a.get("id_unique_bien") or b.get("id_unique_bien")
-        conf = round(score, 3)
-        sb.table("annonces").update({
-            "sur_seloger":      True,
-            "match_confidence": conf,
-            "id_unique_bien":   shared_id,
-        }).eq("id_annonce", lbc_id).execute()
-        sb.table("annonces").update({
-            "sur_lbc":          True,
-            "match_confidence": conf,
-            "id_unique_bien":   shared_id,
-        }).eq("id_annonce", sl_id).execute()
-        matched_lbc.add(lbc_id)
-        matched_sl.add(sl_id)
-        n_matches += 1
-
-    return n_matches
+    return {"n_clusters": n_clusters, "n_annonces": n_touched}
 
 
 # ---------------------------------------------------------------------------
@@ -710,14 +670,13 @@ def run_transform(code_postal: str, commune: str = "") -> None:
         if n_disparus:
             print(f"    {n_disparus} annonces marquées inactives")
 
-    n_matches = fuzzy_match_cross_portal(code_postal, scraped_at)
-    if n_matches:
-        print(f"\n  {n_matches} biens matchés inter-portails (fuzzy)")
+    n_intra = intra_entity_match(code_postal)
+    if n_intra:
+        print(f"\n  {n_intra} paires intra-entité matchées (LBC↔SeLoger, seuil 0.70)")
 
-    cl = cluster_multi_entity(code_postal)
+    cl = cross_entity_match(code_postal)
     if cl["n_annonces"]:
-        print(f"  clustering multi-entités : {cl['n_clusters_multi']} clusters multi-mandats, "
-              f"{cl['n_clusters_same']} doublons internes ({cl['n_annonces']} annonces)")
+        print(f"  {cl['n_clusters']} clusters multi-entités ({cl['n_annonces']} annonces, seuil 0.80)")
 
     update_entity_snapshots(code_postal, scraped_at)
 

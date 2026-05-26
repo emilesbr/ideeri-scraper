@@ -79,7 +79,7 @@ CREATE INDEX IF NOT EXISTS idx_entites_cp        ON entites USING GIN (codes_pos
 --
 -- Colonnes de base (existantes avant migration_v2) :
 --   id_annonce, source, type_bien, prix_affiche, surface, code_postal,
---   date_premiere_obs, date_derniere_obs, est_active, id_unique_bien,
+--   date_premiere_obs, date_derniere_obs, est_active, bien_id, cluster_bien_id,
 --   sur_lbc, sur_seloger, signature_entite_bien, nom_commercial
 --
 -- Colonnes ajoutées en migration V2 :
@@ -99,7 +99,7 @@ ALTER TABLE annonces ADD COLUMN IF NOT EXISTS dpe                 text;
 ALTER TABLE annonces ADD COLUMN IF NOT EXISTS ges                 text;
 -- Classe GES : A–G. LBC uniquement (attr ges). SeLoger ne l'expose pas en SERP.
 ALTER TABLE annonces ADD COLUMN IF NOT EXISTS match_confidence    float;
--- Score fuzzy inter-portail 0.50–1.0 (null si non matché en passe 2)
+-- Score intra_entity_match (seuil 0.70, LBC↔SeLoger même entité)
 ALTER TABLE annonces ADD COLUMN IF NOT EXISTS energie_budget_min  integer;
 ALTER TABLE annonces ADD COLUMN IF NOT EXISTS energie_budget_max  integer;
 -- Coût énergétique annuel estimé en euros (LBC: annual_energy_budget_min/max)
@@ -107,16 +107,18 @@ ALTER TABLE annonces ADD COLUMN IF NOT EXISTS annee_construction  integer;
 -- LBC: attr building_year
 ALTER TABLE annonces ADD COLUMN IF NOT EXISTS etage               integer;
 -- LBC: attr floor_number
+ALTER TABLE annonces ADD COLUMN IF NOT EXISTS bien_id             text;
+-- Identifiant canonique du bien : id_annonce (non matché), id_annonce LBC (intra_entity), cluster_id hex (cross_entity)
 ALTER TABLE annonces ADD COLUMN IF NOT EXISTS cluster_bien_id     text;
--- Hash du cluster multi-entités (passe 3). NULL si bien en mandat unique.
+-- ID du cluster cross-entités (cross_entity_match). NULL si bien en mandat unique.
 ALTER TABLE annonces ADD COLUMN IF NOT EXISTS cluster_confidence  float;
--- Score minimum de la paire la plus faible dans le cluster
+-- Score moyen du cluster cross-entités
 
 CREATE INDEX IF NOT EXISTS idx_annonces_cp_active   ON annonces (code_postal, est_active);
 CREATE INDEX IF NOT EXISTS idx_annonces_source_cp   ON annonces (source, code_postal);
 CREATE INDEX IF NOT EXISTS idx_annonces_entite       ON annonces (entite_id)       WHERE entite_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_annonces_premiere_obs ON annonces (date_premiere_obs DESC);
-CREATE INDEX IF NOT EXISTS idx_annonces_id_unique    ON annonces (id_unique_bien)  WHERE id_unique_bien IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_annonces_bien_id      ON annonces (bien_id)         WHERE bien_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_annonces_cluster      ON annonces (cluster_bien_id) WHERE cluster_bien_id IS NOT NULL;
 
 
@@ -147,9 +149,10 @@ CREATE INDEX IF NOT EXISTS idx_stg_seloger_cp_date   ON stg_seloger (code_postal
 -- 1.5 Vue biens_uniques — un bien réel par ligne, tous portails agrégés
 --
 -- Logique de groupement :
---   COALESCE(cluster_bien_id, id_unique_bien)
---   → cluster_bien_id est non-null pour les biens multi-entités (passe 3)
---   → id_unique_bien est utilisé sinon (passe 1 : hash exact surface/prix/type/CP)
+--   bien_id — défini par le pipeline de matching dans transform.py :
+--     • id_annonce (non matché)
+--     • id_annonce LBC (intra_entity_match : LBC↔SeLoger même entité, seuil 0.70)
+--     • cluster_id hex (cross_entity_match : multi-entités, seuil 0.80, Union-Find DPE-safe)
 --
 -- Flags :
 --   multi_mandat     = plusieurs entités différentes diffusent ce bien
@@ -158,7 +161,7 @@ CREATE INDEX IF NOT EXISTS idx_stg_seloger_cp_date   ON stg_seloger (code_postal
 DROP VIEW IF EXISTS biens_uniques;
 CREATE VIEW biens_uniques AS
 SELECT
-    COALESCE(cluster_bien_id, id_unique_bien)        AS bien_id,
+    bien_id,
     code_postal,
     MIN(commune)                                      AS commune,
     MIN(type_bien)                                    AS type_bien,
@@ -177,8 +180,8 @@ SELECT
     (COUNT(DISTINCT entite_id) = 1 AND COUNT(*) > 1) AS doublon_interne
 FROM annonces
 WHERE est_active = TRUE
-  AND COALESCE(cluster_bien_id, id_unique_bien) IS NOT NULL
-GROUP BY COALESCE(cluster_bien_id, id_unique_bien), code_postal;
+  AND bien_id IS NOT NULL
+GROUP BY bien_id, code_postal;
 
 
 -- =============================================================================
@@ -269,14 +272,14 @@ SELECT
 FROM (
     SELECT
         a.entite_id,
-        COALESCE(a.cluster_bien_id, a.id_unique_bien)  AS bien_id,
-        bool_or(a.source = 'lbc')                      AS sur_lbc,
-        bool_or(a.source = 'seloger')                  AS sur_seloger
+        a.bien_id,
+        bool_or(a.source = 'lbc')     AS sur_lbc,
+        bool_or(a.source = 'seloger') AS sur_seloger
     FROM annonces a
     WHERE a.code_postal = '69700'
       AND a.est_active = TRUE
       AND a.entite_id IS NOT NULL
-    GROUP BY a.entite_id, COALESCE(a.cluster_bien_id, a.id_unique_bien)
+    GROUP BY a.entite_id, a.bien_id
 ) mandats;
 
 
@@ -287,7 +290,7 @@ FROM (
 -- Top entités par nombre de biens uniques
 SELECT
     nom_commercial,
-    COUNT(DISTINCT COALESCE(a.cluster_bien_id, a.id_unique_bien)) AS biens_uniques,
+    COUNT(DISTINCT a.bien_id)                                     AS biens_uniques,
     COUNT(DISTINCT CASE WHEN source = 'lbc'     THEN a.id_annonce END) AS ann_lbc,
     COUNT(DISTINCT CASE WHEN source = 'seloger' THEN a.id_annonce END) AS ann_seloger,
     e.sur_lbc,
@@ -448,12 +451,12 @@ WHERE siren IS NOT NULL
 GROUP BY siren
 HAVING COUNT(*) > 1;
 
--- Annonces avec match_confidence mais id_unique_bien non aligné (bug passe 2)
+-- Annonces matchées intra-entity sans bien_id aligné (sanity check)
 SELECT COUNT(*)
 FROM annonces
 WHERE match_confidence IS NOT NULL
   AND sur_lbc = TRUE AND sur_seloger = TRUE
-  AND id_unique_bien IS NULL;
+  AND bien_id = id_annonce;  -- bien_id non aligné = paire non trouvée
 
 
 -- -----------------------------------------------------------------------------
@@ -480,31 +483,30 @@ ORDER BY a.code_postal, a.date_premiere_obs DESC;
 
 
 -- -----------------------------------------------------------------------------
--- 3.3 Réinitialisation du clustering multi-entités
+-- 3.3 Réinitialisation complète du matching (intra + cross)
 --
--- À relancer après un nouveau run de scraping (nouveaux biens ajoutés).
--- Le clustering est lancé automatiquement par transform.py via
--- cluster_multi_entity(code_postal).
--- Cette requête remet les champs à NULL pour forcer un recalcul complet.
+-- À utiliser si les seuils de compute_match_score() ont changé,
+-- ou après ajout de nouvelles annonces nécessitant un recalcul complet.
+-- Après ce reset, relancer via Python :
+--   from transform import intra_entity_match, cross_entity_match
+--   intra_entity_match('69700')
+--   cross_entity_match('69700')
 -- -----------------------------------------------------------------------------
 
+-- Étape 1 : reset des flags portails et champs matching
 UPDATE annonces
-SET cluster_bien_id  = NULL,
+SET sur_lbc          = (source = 'lbc'),
+    sur_seloger      = (source = 'seloger'),
+    match_confidence  = NULL,
+    cluster_bien_id   = NULL,
     cluster_confidence = NULL
-WHERE code_postal = '69700';  -- à adapter
+WHERE code_postal = '69700'   -- à adapter
+  AND est_active = TRUE;
 
-
--- -----------------------------------------------------------------------------
--- 3.4 Réinitialisation du fuzzy matching inter-portail
---
--- À relancer si les seuils de compute_match_score() ont changé.
--- -----------------------------------------------------------------------------
-
+-- Étape 2 : réinitialiser bien_id = id_annonce (SQL pur)
 UPDATE annonces
-SET sur_lbc        = (source = 'lbc'),
-    sur_seloger    = (source = 'seloger'),
-    match_confidence = NULL
-WHERE code_postal = '69700'  -- à adapter
+SET bien_id = id_annonce
+WHERE code_postal = '69700'   -- à adapter
   AND est_active = TRUE;
 
 

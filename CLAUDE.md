@@ -143,12 +143,14 @@ Une ligne par annonce de portail. **Append-only** — ne jamais écraser, suivi 
 | `date_derniere_obs`      | timestamptz | Dernier run actif |
 | `est_active`             | boolean     | `false` = annonce retirée du portail |
 | `prix_m2_affiche`        | float       | prix / surface |
-| `id_unique_bien`         | text        | Hash de dédup — aligné entre portails après fuzzy matching |
-| `sur_lbc`                | boolean     | Diffusée sur LBC (peut être `true` même si `source='seloger'` après fuzzy) |
+| `bien_id`                | text        | Identifiant canonique du bien : `id_annonce` si non matché, sinon `id_annonce` LBC (intra_entity) ou `cluster_id` hex (cross_entity) |
+| `cluster_bien_id`        | text        | ID du cluster cross-entités (null si non regroupé) |
+| `cluster_confidence`     | float       | Score moyen du cluster cross-entités |
+| `sur_lbc`                | boolean     | Diffusée sur LBC (peut être `true` même si `source='seloger'` après matching) |
 | `sur_seloger`            | boolean     | Diffusée sur SeLoger |
-| `dpe`                    | text        | Classe DPE : A–G ou N (neuf). LBC: attr `energy_rate`, SeLoger: `energyClass` |
+| `dpe`                    | text        | Classe DPE : A–G ou N (neuf). LBC: attr `energy_rate` + VEFA→N, SeLoger: `energyClass` |
 | `ges`                    | text        | Classe GES : A–G. LBC uniquement (attr `ges`). SeLoger ne l'expose pas. |
-| `match_confidence`       | float       | Score fuzzy inter-portail 0.50–1.0 (null si non matché en passe 2) |
+| `match_confidence`       | float       | Score intra_entity_match (seuil 0.70) |
 | `historique_prix`        | jsonb       | `[{date, prix, ancien_prix}]` |
 | `signature_entite_bien`  | text        | `entity_signature()` — conservé pour historique |
 | `nom_commercial`         | text        | Nom de l'entité au moment du scraping |
@@ -181,23 +183,27 @@ Staging brut — une ligne par page scrapée.
 ```sql
 CREATE OR REPLACE VIEW biens_uniques AS
 SELECT
-  id_unique_bien, code_postal,
-  MIN(commune) AS commune, MIN(type_bien) AS type_bien,
-  MIN(surface) AS surface, MIN(prix_affiche) AS prix_min, MAX(prix_affiche) AS prix_max,
-  bool_or(source = 'lbc')     AS sur_lbc,
-  bool_or(source = 'seloger') AS sur_seloger,
-  COUNT(*)                    AS nb_annonces,
-  COUNT(DISTINCT entite_id)   AS nb_entites,
-  array_agg(DISTINCT nom_commercial) AS entites
+    bien_id, code_postal,
+    MIN(commune) AS commune, MIN(type_bien) AS type_bien,
+    ROUND(AVG(surface::numeric), 1) AS surface,
+    MIN(prix_affiche) AS prix_min, MAX(prix_affiche) AS prix_max,
+    bool_or(source = 'lbc')     AS sur_lbc,
+    bool_or(source = 'seloger') AS sur_seloger,
+    COUNT(*)                    AS nb_annonces,
+    COUNT(DISTINCT entite_id)   AS nb_entites,
+    array_agg(DISTINCT nom_commercial) AS entites,
+    MIN(dpe) AS dpe, MIN(ges) AS ges,
+    MIN(annee_construction) AS annee_construction,
+    (COUNT(DISTINCT entite_id) > 1)                    AS multi_mandat,
+    (COUNT(DISTINCT entite_id) = 1 AND COUNT(*) > 1)   AS doublon_interne
 FROM annonces
-WHERE est_active = TRUE AND id_unique_bien IS NOT NULL
-GROUP BY id_unique_bien, code_postal;
+WHERE est_active = TRUE AND bien_id IS NOT NULL
+GROUP BY bien_id, code_postal;
 ```
 
-**Ce qu'elle retourne** : une ligne par bien réel (`id_unique_bien`), avec les flags de
-présence portail construits par agrégation. Après fuzzy matching, deux annonces LBC+SeLoger
-qui représentent le même bien partagent le même `id_unique_bien` → apparaissent comme une
-seule ligne avec `sur_lbc=true AND sur_seloger=true`.
+**Ce qu'elle retourne** : une ligne par bien réel (`bien_id`), avec les flags de
+présence portail construits par agrégation. Après matching, plusieurs annonces
+représentant le même bien partagent le même `bien_id`.
 
 **Cas d'usage** :
 - Compter les biens uniques sur une commune (pas les doublons inter-portails)
@@ -343,44 +349,48 @@ Structure d'un item `ads[i]` :
 
 ## 6. Algorithme de déduplication et matching
 
-### Passe 1 — hash exact (`id_unique_bien`)
+### Identifiant canonique (`bien_id`)
 
-```python
-def id_unique_bien(type_bien, surface, code_postal, prix) -> str:
-    s = round(float(surface or 0) / 5) * 5        # arrondi 5m²
-    p = round(float(prix or 0) / 10_000) * 10_000 # arrondi 10k€
-    key = f"{type_bien}|{s}|{code_postal}|{p}"
-    return hashlib.md5(key.encode()).hexdigest()[:16]
-```
+Chaque annonce reçoit `bien_id = id_annonce` à l'insertion. Le matching peut ensuite
+l'aligner sur un bien partagé :
+- `intra_entity_match` : `bien_id` = `id_annonce` LBC pour la paire LBC↔SeLoger
+- `cross_entity_match` : `bien_id` = `cluster_id` hex (uuid4[:16]) partagé entre toutes
+  les annonces du cluster
 
-Limites : le même bien affiché à 180 000€ sur LBC et 185 000€ sur SeLoger → hashs différents.
-La passe 2 corrige ces cas.
+### Score unique `compute_match_score(a, b) → float`
 
-### Passe 2 — fuzzy matching inter-portail (`compute_match_score`)
-
-**Conditions obligatoires** (retourne 0.0 si l'une échoue) :
+**Conditions bloquantes** (→ 0.0 si l'une échoue) :
 1. Même `code_postal`
 2. Même `type_bien` (si renseigné sur les deux)
 3. Écart surface ≤ 5% : `|s1-s2| / max(s1,s2) ≤ 0.05`
 4. Écart prix ≤ 10% : `|p1-p2| / max(p1,p2) ≤ 0.10`
-5. Même entité : `entite_id` identique **OU** `normalize_name(nom)` identique
+5. Deux DPE standards différents (ex. C vs D) → rejet
+6. Un DPE = N et l'autre dans {A–G} (neuf vs ancien) → rejet
 
-**Score de confiance** (si toutes les conditions passent) :
+**Score** (si conditions passées) :
 ```
-score = 0.50  (base — conditions obligatoires respectées)
-+ 0.15 × (1 - écart_surface / 0.05)    → jusqu'à +0.15
-+ 0.15 × (1 - écart_prix / 0.10)       → jusqu'à +0.15
-+ 0.10 si entite_id exact (vs nom normalisé)
-+ 0.10 si DPE identique sur les deux
+score = 0.50  (base)
++ 0.20 × (1 - écart_surface / 0.05)   → max +0.20
++ 0.20 × (1 - écart_prix    / 0.10)   → max +0.20
++ 0.15  si DPE identique
+- 0.25  si DPE différents (mais non bloquants — cas N vs None, ou None vs None n'applique pas)
++ 0.08  si GES identique
++ 0.10  si nb_pieces identique
++ 0.05  si annee_construction ±5 ans
 ```
+Plage : **0.50** (price/surface au seuil, pas de bonus) → **1.0** (parfait). Plafonné à 1.0.
 
-Plage résultante : **0.50** (entity par nom, price/surface au seuil) → **1.0** (parfait).
+### Deux appels distincts
 
-**Greedy one-to-one** : tri par score décroissant, chaque annonce LBC et SeLoger ne peut
-être appariée qu'une fois. Les deux annonces de la paire reçoivent :
-- `sur_seloger=True` (côté LBC) et `sur_lbc=True` (côté SeLoger)
-- `id_unique_bien` aligné sur la valeur LBC
-- `match_confidence` = score arrondi à 3 décimales
+**`intra_entity_match(cp)` — seuil 0.70** :
+- Uniquement les paires LBC↔SeLoger de la **même entité** (`entite_id` identique)
+- Greedy one-to-one (tri score décroissant)
+- Action : `sur_seloger=True` côté LBC, `sur_lbc=True` côté SeLoger, `bien_id` = `id_annonce` LBC, `match_confidence`
+
+**`cross_entity_match(cp)` — seuil 0.80** :
+- Toutes les annonces actives, paires d'**entités différentes**
+- Union-Find avec protection DPE-safe : jamais de merge VEFA (N) + ancien (A–G), même par transitivité
+- Action : `cluster_bien_id` + `bien_id` = `cluster_id` partagé, `cluster_confidence` = score moyen
 
 ### Déduplication des entités (`entity_signature`)
 
@@ -400,22 +410,25 @@ Clé de dédup par priorité décroissante :
 - **Scraping** : 4 pages SeLoger (30/page) + 4 pages LBC (35/page)
 - **Annonces actives** : 231 (112 LBC + 119 SeLoger)
 - **Entités identifiées** : 79
-- **Biens uniques** : 142
-- **Biens sur les deux portails** : 45/142 (31.7%) après fuzzy matching
-  - Avant fuzzy : 0 (hash exact ne matchait rien entre portails)
-  - 40 paires trouvées, score médian ≈ 1.0
-- **Biens diffusés par 2+ entités** : 40/142 (28.2%)
-- **Couverture DPE** : 180/231 (78%) — LBC 58%, SeLoger 97%
-- **Couverture GES** : 65/231 (28%) — LBC uniquement
+- **Biens uniques** : 121
+  - LBC seul : 31 | SeLoger seul : 46 | les deux : 44 (36.4%)
+  - 33 paires intra-entité (LBC↔SeLoger même agence), score médian 1.0
+  - 40 clusters multi-entités (131 annonces), 0 violation DPE N+std
+- **Biens en multi-mandat** : 40/121 (33.1%) — même bien, agences différentes
+- **Doublons internes** : 19/121 — même agence, même bien sur les deux portails
+- **Couverture DPE** : ~96% (VEFA LBC → DPE=N automatique)
+- **Couverture GES** : 28% — LBC uniquement
 
 Top entités par nb_annonces_actives :
 | Entité | Biens | LBC | SeLoger |
 |--------|-------|-----|---------|
-| GUY HOQUET L'IMMOBILIER | 16 | 0 | 16 |
-| LES CLÉS D'ALEXIA Lyon | 11 | 0 | 11 |
-| PATRIMMO SERVICE | 11 | 11 | 0 |
-| CENTURY 21 HESTIA LDI GRIGNY | 10 | 0 | 10 |
-| LEONE IMMOBILIER | 8 | 5 | 8 |
+| GUY HOQUET L'IMMOBILIER | 19 | – | 19 |
+| CENTURY 21 HESTIA LDI   | 17 | 8 | 9  |
+| LES CLÉS D'ALEXIA Lyon  | 11 | – | 11 |
+| PATRIMMO SERVICE        | 11 | 11 | – |
+| LEONE IMMOBILIER        | 8  | 5 | 8  |
+
+Note : CENTURY 21 HESTIA LDI et CENTURY 21 HESTIA LDI GRIGNY = même SIREN → une seule entité.
 
 ---
 
@@ -459,9 +472,10 @@ Pipeline exécuté par `run_transform()` :
 3. Parse et upsert chaque annonce dans `annonces` (new / price_change / unchanged)
 4. Upsert les entités dans `entites`
 5. Marque inactives les annonces non vues ce run
-6. Lance `fuzzy_match_cross_portal()` (passe 2)
-7. Met à jour `historique_activite` des entités
-8. Met à jour les stats dans `runs`
+6. Lance `intra_entity_match()` (LBC↔SeLoger même entité, seuil 0.70)
+7. Lance `cross_entity_match()` (multi-entités, seuil 0.80, Union-Find DPE-safe)
+8. Met à jour `historique_activite` des entités
+9. Met à jour les stats dans `runs`
 
 ### Requêtes analytiques standard
 
@@ -482,9 +496,9 @@ GROUP BY 1 ORDER BY 2 DESC;
 -- Top entités avec répartition portails
 SELECT
   nom_commercial,
-  COUNT(DISTINCT id_unique_bien)                                       AS biens_uniques,
-  COUNT(DISTINCT CASE WHEN source='lbc'     THEN id_unique_bien END)  AS lbc,
-  COUNT(DISTINCT CASE WHEN source='seloger' THEN id_unique_bien END)  AS seloger
+  COUNT(DISTINCT bien_id)                                     AS biens_uniques,
+  COUNT(DISTINCT CASE WHEN source='lbc'     THEN bien_id END) AS lbc,
+  COUNT(DISTINCT CASE WHEN source='seloger' THEN bien_id END) AS seloger
 FROM annonces
 WHERE code_postal = '69700' AND est_active = TRUE
 GROUP BY nom_commercial ORDER BY biens_uniques DESC;
@@ -509,26 +523,29 @@ WHERE nom_commercial = 'LEONE IMMOBILIER'
 ORDER BY 1;
 ```
 
-### Backfill DPE/GES sur données antérieures
+### Réinitialiser et relancer le matching (après changement d'algorithme)
 
 ```bash
 python3 -c "
-import os; from dotenv import load_dotenv; load_dotenv()
+from dotenv import load_dotenv; load_dotenv()
+import os
 from supabase import create_client
-from transform import parse_lbc_ads, parse_seloger_ads, fuzzy_match_cross_portal
+from transform import intra_entity_match, cross_entity_match
 sb = create_client(os.environ['SUPA_URL'], os.environ['SUPA_KEY'])
 
-for row in sb.table('stg_lbc').select('data_brute').execute().data:
-    for ann in parse_lbc_ads(row['data_brute']):
-        u = {k: ann[k] for k in ('dpe','ges') if ann.get(k)}
-        if u: sb.table('annonces').update(u).eq('id_annonce', ann['id_annonce']).execute()
+# 1. Reset
+ids = [r['id_annonce'] for r in sb.table('annonces').select('id_annonce').eq('code_postal','69700').eq('est_active',True).execute().data]
+for i in range(0, len(ids), 50):
+    sb.table('annonces').update({'sur_lbc': False, 'sur_seloger': False, 'match_confidence': None, 'cluster_bien_id': None, 'cluster_confidence': None}).in_('id_annonce', ids[i:i+50]).execute()
+for iid in [r['id_annonce'] for r in sb.table('annonces').select('id_annonce').eq('code_postal','69700').eq('source','lbc').eq('est_active',True).execute().data]:
+    sb.table('annonces').update({'sur_lbc': True, 'bien_id': iid}).eq('id_annonce', iid).execute()
+for iid in [r['id_annonce'] for r in sb.table('annonces').select('id_annonce').eq('code_postal','69700').eq('source','seloger').eq('est_active',True).execute().data]:
+    sb.table('annonces').update({'sur_seloger': True, 'bien_id': iid}).eq('id_annonce', iid).execute()
 
-for row in sb.table('stg_seloger').select('data_brute').execute().data:
-    for ann in parse_seloger_ads(row['data_brute']):
-        if ann.get('dpe'):
-            sb.table('annonces').update({'dpe': ann['dpe']}).eq('id_annonce', ann['id_annonce']).execute()
-
-print(fuzzy_match_cross_portal('69700', 'backfill'), 'biens matchés')
+# 2. Re-run
+n = intra_entity_match('69700')
+cl = cross_entity_match('69700')
+print(f'{n} paires intra, {cl[\"n_clusters\"]} clusters cross')
 "
 ```
 
