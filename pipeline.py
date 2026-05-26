@@ -308,50 +308,67 @@ def cmd_status(cp: str):
 # scrape
 # ---------------------------------------------------------------------------
 
-def cmd_scrape(cp: str, commune: str, sl_code: str | None = None) -> dict | None:
+def cmd_scrape(cp: str, commune: str, sl_code: str | None = None,
+               source: str | None = None) -> dict | None:
+    do_sl  = source in (None, "seloger")
+    do_lbc = source in (None, "lbc")
     sb       = _sb()
     lbc_base = _lbc_base(commune, cp)
     sl_base  = _sl_base(sl_code if sl_code else cp)
 
-    print(f"\n{B}=== Scrape {commune} ({cp}) ==={RST}\n")
+    label = f" [{source.upper()}]" if source else ""
+    print(f"\n{B}=== Scrape {commune} ({cp}){label} ==={RST}\n")
     print(f"  Sondage page 1 (détection du volume)...\n")
 
     # Sonde SeLoger p1
-    print(f"  SeLoger p1...", end=" ", flush=True)
-    r_sl = _fetch(f"seloger_{cp}_p1", sl_base, SL_PARAMS, timeout=45)
-    sl_ids, sl_raw, sl_total = _parse_seloger(r_sl["html"]) if r_sl["status"] == 200 else ([], {}, 0)
-    sl_pages = max(1, math.ceil(sl_total / 30)) if sl_total else 0
-    print(f"{'OK — ' + str(sl_total) + ' ann. → ' + str(sl_pages) + ' pages' if r_sl['status'] == 200 else 'ECHEC HTTP ' + str(r_sl['status'])}")
+    sl_ids, sl_raw, sl_total, sl_pages = [], {}, 0, 0
+    r_sl = {"status": None, "html": ""}
+    if do_sl:
+        print(f"  SeLoger p1...", end=" ", flush=True)
+        r_sl = _fetch(f"seloger_{cp}_p1", sl_base, SL_PARAMS, timeout=45)
+        sl_ids, sl_raw, sl_total = _parse_seloger(r_sl["html"]) if r_sl["status"] == 200 else ([], {}, 0)
+        sl_pages = max(1, math.ceil(sl_total / 30)) if sl_total else 0
+        print(f"{'OK — ' + str(sl_total) + ' ann. → ' + str(sl_pages) + ' pages' if r_sl['status'] == 200 else 'ECHEC HTTP ' + str(r_sl['status'])}")
 
     # Sonde LBC p1
-    print(f"  LBC p1...", end=" ", flush=True)
-    r_lbc = _fetch(f"lbc_{cp}_p1", f"{lbc_base}/p-1", LBC_PARAMS, timeout=120)
-    lbc_ads, lbc_raw, lbc_total = _parse_lbc(r_lbc["html"]) if r_lbc["status"] == 200 else ([], {}, 0)
-    lbc_pages = max(1, math.ceil(lbc_total / 35)) if lbc_total else 0
-    print(f"{'OK — ' + str(lbc_total) + ' ann. → ' + str(lbc_pages) + ' pages' if r_lbc['status'] == 200 else 'ECHEC HTTP ' + str(r_lbc['status'])}")
+    lbc_ads, lbc_raw, lbc_total, lbc_pages = [], {}, 0, 0
+    r_lbc = {"status": None, "html": ""}
+    if do_lbc:
+        print(f"  LBC p1...", end=" ", flush=True)
+        r_lbc = _fetch(f"lbc_{cp}_p1", f"{lbc_base}/p-1", LBC_PARAMS, timeout=120)
+        lbc_ads, lbc_raw, lbc_total = _parse_lbc(r_lbc["html"]) if r_lbc["status"] == 200 else ([], {}, 0)
+        lbc_pages = max(1, math.ceil(lbc_total / 35)) if lbc_total else 0
+        print(f"{'OK — ' + str(lbc_total) + ' ann. → ' + str(lbc_pages) + ' pages' if r_lbc['status'] == 200 else 'ECHEC HTTP ' + str(r_lbc['status'])}")
 
-    if sl_total == 0 and lbc_total == 0:
+    if (do_sl and sl_total == 0 and not do_lbc) or \
+       (do_lbc and lbc_total == 0 and not do_sl) or \
+       (do_sl and do_lbc and sl_total == 0 and lbc_total == 0):
         print(f"\n  {R}Aucune annonce détectée. Vérifie les URLs ou les crédits.{RST}")
         return None
 
     credits_sl  = sl_pages  * 10
     credits_lbc = lbc_pages * 75
 
-    print(f"\n  SeLoger : {sl_total} annonces → {sl_pages} pages (~{credits_sl} crédits)")
-    print(f"  LBC     : {lbc_total} annonces → {lbc_pages} pages (~{credits_lbc} crédits)")
+    if do_sl:
+        print(f"\n  SeLoger : {sl_total} annonces → {sl_pages} pages (~{credits_sl} crédits)")
+    if do_lbc:
+        print(f"  LBC     : {lbc_total} annonces → {lbc_pages} pages (~{credits_lbc} crédits)")
     print(f"  Total estimé : ~{credits_sl + credits_lbc} crédits\n")
 
-    # Guard : données déjà présentes aujourd'hui
-    today    = datetime.now(timezone.utc).date().isoformat()
-    existing = sb.table("stg_lbc").select("data_brute").eq(
-        "data_brute->_meta->>code_postal", cp).execute().data
-    if any(r.get("data_brute", {}).get("_meta", {}).get("scraped_at", "")[:10] == today
-           for r in existing):
-        _warn(f"Des données existent déjà pour {cp} aujourd'hui.")
-        rep = input("  Écraser et re-scraper ? [o/n] : ").strip().lower()
-        if rep != "o":
-            print("  Annulé.")
-            return None
+    # Guard : données déjà présentes aujourd'hui pour la source concernée
+    today = datetime.now(timezone.utc).date().isoformat()
+    guard_tables = []
+    if do_lbc:  guard_tables.append("stg_lbc")
+    if do_sl:   guard_tables.append("stg_seloger")
+    for gtable in guard_tables:
+        existing = sb.table(gtable).select("scraped_at").eq("code_postal", cp).execute().data
+        if any((r.get("scraped_at") or "")[:10] == today for r in existing):
+            _warn(f"Des données {gtable} existent déjà pour {cp} aujourd'hui.")
+            rep = input("  Écraser et re-scraper ? [o/n] : ").strip().lower()
+            if rep != "o":
+                print("  Annulé.")
+                return None
+            break
 
     rep = input("  Continuer ? [o/n] : ").strip().lower()
     if rep != "o":
@@ -359,17 +376,19 @@ def cmd_scrape(cp: str, commune: str, sl_code: str | None = None) -> dict | None
         return None
 
     # Insérer page 1 (déjà fetchée)
-    if r_sl["status"] == 200:
-        _insert_stg("stg_seloger", commune, cp, 1, sl_base, sl_raw, len(sl_ids), sb)
-    if r_lbc["status"] == 200:
-        _insert_stg("stg_lbc", commune, cp, 1, lbc_base, lbc_raw, len(lbc_ads), sb)
+    if do_sl  and r_sl["status"]  == 200:
+        _insert_stg("stg_seloger", commune, cp, 1, sl_base,          sl_raw,  len(sl_ids),  sb)
+    if do_lbc and r_lbc["status"] == 200:
+        _insert_stg("stg_lbc",     commune, cp, 1, f"{lbc_base}/p-1", lbc_raw, len(lbc_ads), sb)
 
     # Construire les tâches pages 2..N
     tasks = []
-    for p in range(2, sl_pages  + 1):
-        tasks.append(("seloger", p, f"{sl_base}&page={p}", SL_PARAMS, 45))
-    for p in range(2, lbc_pages + 1):
-        tasks.append(("lbc",     p, f"{lbc_base}/p-{p}",  LBC_PARAMS, 120))
+    if do_sl:
+        for p in range(2, sl_pages  + 1):
+            tasks.append(("seloger", p, f"{sl_base}&page={p}",   SL_PARAMS,  45))
+    if do_lbc:
+        for p in range(2, lbc_pages + 1):
+            tasks.append(("lbc",     p, f"{lbc_base}/p-{p}",     LBC_PARAMS, 120))
 
     total_sl  = len(sl_ids)
     total_lbc = len(lbc_ads)
@@ -407,8 +426,10 @@ def cmd_scrape(cp: str, commune: str, sl_code: str | None = None) -> dict | None
                 ok_lbc    += 1
 
     print(f"\n  {B}Résultat scraping :{RST}")
-    print(f"  LBC     : {total_lbc} ann. sur {lbc_pages} pages ({ok_lbc} OK / {lbc_pages - ok_lbc} ERR)")
-    print(f"  SeLoger : {total_sl} ann. sur {sl_pages} pages ({ok_sl} OK / {sl_pages - ok_sl} ERR)")
+    if do_lbc:
+        print(f"  LBC     : {total_lbc} ann. sur {lbc_pages} pages ({ok_lbc} OK / {lbc_pages - ok_lbc} ERR)")
+    if do_sl:
+        print(f"  SeLoger : {total_sl} ann. sur {sl_pages} pages ({ok_sl} OK / {sl_pages - ok_sl} ERR)")
     print(f"  Crédits consommés : ~{credits_sl + credits_lbc}")
     print(f"\n  → Lance transform : {C}python3 pipeline.py transform {cp} {commune}{RST}")
 
@@ -441,9 +462,10 @@ def cmd_transform(cp: str, commune: str):
 # run
 # ---------------------------------------------------------------------------
 
-def cmd_run(cp: str, commune: str, sl_code: str | None = None):
+def cmd_run(cp: str, commune: str, sl_code: str | None = None,
+            source: str | None = None):
     t0 = time.time()
-    result = cmd_scrape(cp, commune, sl_code)
+    result = cmd_scrape(cp, commune, sl_code, source)
     if result is None:
         return
     print()
@@ -509,6 +531,8 @@ def main():
     p.add_argument("commune")
     p.add_argument("--sl-code", dest="sl_code", default=None,
                    help="Code SeLoger (ex: AD08FR28776) — optionnel, par défaut = CP")
+    p.add_argument("--source", choices=["seloger", "lbc"], default=None,
+                   help="Scraper une seule source (par défaut : les deux)")
 
     p = sub.add_parser("transform", help="Transforme les données staging")
     p.add_argument("cp")
@@ -518,6 +542,8 @@ def main():
     p.add_argument("cp")
     p.add_argument("commune")
     p.add_argument("--sl-code", dest="sl_code", default=None)
+    p.add_argument("--source", choices=["seloger", "lbc"], default=None,
+                   help="Scraper une seule source (par défaut : les deux)")
 
     p = sub.add_parser("reset", help="Réinitialise le matching d'un code postal")
     p.add_argument("cp")
@@ -527,9 +553,9 @@ def main():
     {
         "check":     lambda: cmd_check(),
         "status":    lambda: cmd_status(args.cp),
-        "scrape":    lambda: cmd_scrape(args.cp, args.commune, getattr(args, "sl_code", None)),
+        "scrape":    lambda: cmd_scrape(args.cp, args.commune, getattr(args, "sl_code", None), getattr(args, "source", None)),
         "transform": lambda: cmd_transform(args.cp, args.commune),
-        "run":       lambda: cmd_run(args.cp, args.commune, getattr(args, "sl_code", None)),
+        "run":       lambda: cmd_run(args.cp, args.commune, getattr(args, "sl_code", None), getattr(args, "source", None)),
         "reset":     lambda: cmd_reset(args.cp),
     }[args.cmd]()
 
