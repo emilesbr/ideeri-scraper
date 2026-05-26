@@ -129,9 +129,15 @@ def parse_lbc_ads(data_brute: dict) -> list[dict]:
         except ValueError:
             surface = None
 
-        # Type de bien
-        cat = a.get("category", {}).get("name", "").lower()
-        type_bien = "maison" if "maison" in cat else "appartement"
+        # Type de bien — real_estate_type attr en priorité (1=maison, 2=appartement)
+        rt = _lbc_attr(a, "real_estate_type")
+        if rt == "1":
+            type_bien = "maison"
+        elif rt == "2":
+            type_bien = "appartement"
+        else:
+            subj = a.get("subject", "").lower()
+            type_bien = "maison" if ("maison" in subj or "villa" in subj) else "appartement"
 
         dpe_raw = _lbc_attr(a, "energy_rate")
         if not dpe_raw and _lbc_attr(a, "immo_sell_type") == "new":
@@ -202,35 +208,61 @@ def parse_seloger_ads(data_brute: dict) -> list[dict]:
         facts = {f["type"]: f.get("splitValue") for f in hf.get("facts", [])}
         prov  = item.get("provider", {})
         meta  = item.get("metadata", {})
+        lt    = item.get("legacyTracking", {})
 
         price_raw = hf.get("price", {}).get("ariaLabel", "")
         prix = int(re.sub(r"[^\d]", "", price_raw)) if price_raw else None
 
+        # Surface : hardFacts en priorité (peut avoir décimale), legacyTracking.space en fallback
         surface_raw = facts.get("livingSpace")
         try:
             surface = float(str(surface_raw).replace(",", ".")) if surface_raw else None
         except ValueError:
             surface = None
+        if surface is None and lt.get("space"):
+            try:
+                surface = float(lt["space"])
+            except (ValueError, TypeError):
+                pass
 
         cp    = loc.get("zipCode", "")
         ville = loc.get("city", "")
         lid   = meta.get("legacyId", cid)
 
-        title = hf.get("title", "").lower()
-        type_bien = "maison" if "maison" in title else "appartement"
+        # Type de bien : legacyTracking.estate_type (1=appartement, 2=maison) > titre
+        et = lt.get("estate_type")
+        if et == 1:
+            type_bien = "appartement"
+        elif et == 2:
+            type_bien = "maison"
+        else:
+            title_l = hf.get("title", "").lower()
+            type_bien = "maison" if "maison" in title_l else "appartement"
 
+        # Nom commercial : intermediaryCard (agence) > cardProvider (agent individuel) > address
         nom_agence = (prov.get("intermediaryCard") or {}).get("title", "")
+        if not nom_agence:
+            nom_agence = (item.get("cardProvider") or {}).get("title", "")
+        if not nom_agence:
+            nom_agence = prov.get("address", "")
+
         siret, siren = _parse_siret_from_legal(prov.get("agencyLegalInformations") or [])
         pt = prov.get("publisherType", "")
         type_e = "particulier" if prov.get("isPrivateOwner") else (
             "promoteur" if pt == "DEVELOPER" else "agence"
         )
 
+        # nb_pieces : hardFacts en priorité, legacyTracking.nb_rooms en fallback
         nb_pieces_raw = facts.get("numberOfRooms")
         try:
             nb_pieces = int(nb_pieces_raw) if nb_pieces_raw else None
         except ValueError:
             nb_pieces = None
+        if nb_pieces is None and lt.get("nb_rooms"):
+            try:
+                nb_pieces = int(lt["nb_rooms"])
+            except (ValueError, TypeError):
+                pass
 
         results.append({
             "id_annonce":       f"seloger_{lid}",
@@ -393,6 +425,10 @@ def upsert_annonce(ann: dict, entite_id: str | None, run_id: int, scraped_at: st
         "date_derniere_obs": now,
         "est_active":        True,
     }
+
+    # type_bien : corrigible si le parseur s'améliore (villa/pavillon non détectés par titre)
+    if ann.get("type_bien") and ann["type_bien"] != row.get("type_bien"):
+        updates["type_bien"] = ann["type_bien"]
 
     if ann.get("sur_lbc"):
         updates["sur_lbc"] = True
