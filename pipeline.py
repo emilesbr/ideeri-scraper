@@ -171,7 +171,7 @@ def cmd_check():
     tables_missing = []
     for t in ("stg_lbc", "stg_seloger", "annonces", "entites", "runs"):
         try:
-            sb.table(t).select("id").limit(0).execute()
+            sb.table(t).select("*").limit(0).execute()
         except Exception:
             tables_missing.append(t)
     if tables_missing:
@@ -200,10 +200,11 @@ def cmd_check():
         if r.status_code == 200:
             d         = r.json()
             used      = d.get("used_api_credits", 0)
-            maxi      = d.get("max_api_credits", 0)
-            remaining = (maxi - used) if maxi else "?"
-            reset_ts  = d.get("billing_cycle_end", "?")
-            _ok(f"ScrapingBee : {remaining} crédits disponibles (reset {reset_ts})")
+            maxi      = d.get("max_api_credits")
+            remaining = (maxi - used) if isinstance(maxi, int) else "?"
+            reset_ts  = d.get("billing_cycle_end") or d.get("next_reset") or "?"
+            suffix    = f"(reset {reset_ts})" if reset_ts != "?" else ""
+            _ok(f"ScrapingBee : {remaining} crédits disponibles {suffix}".strip())
         else:
             _err(f"ScrapingBee — clé invalide (HTTP {r.status_code})")
             all_ok = False
