@@ -52,18 +52,35 @@ def _sb():
 
 
 def _fetch(pid: str, url: str, params: dict, timeout: int) -> dict:
+    """Fetche une URL via ScrapingBee. Backoff automatique sur HTTP 500 (wait +2000ms, 2 retries)."""
     t0 = time.time()
-    try:
-        r = requests.get(SB_URL,
-                         params={"api_key": os.environ["SCRAPINGBEE_KEY"], "url": url, **params},
-                         timeout=timeout)
-        html = r.content.decode("utf-8", errors="replace")
-        (DEBUG / f"{pid}.html").write_text(html, encoding="utf-8")
-        return {"id": pid, "url": url, "status": r.status_code, "html": html,
-                "error": None, "elapsed": round(time.time() - t0, 1)}
-    except Exception as e:
-        return {"id": pid, "url": url, "status": None, "html": "",
-                "error": str(e), "elapsed": round(time.time() - t0, 1)}
+    current_params = dict(params)
+    max_attempts = 3 if "wait" in params else 1
+
+    for attempt in range(max_attempts):
+        if attempt > 0:
+            extra = attempt * 2000
+            current_params["wait"] = str(int(params["wait"]) + extra)
+            print(f"    ↩ retry {attempt} wait={current_params['wait']}ms...", end=" ", flush=True)
+        try:
+            r = requests.get(SB_URL,
+                             params={"api_key": os.environ["SCRAPINGBEE_KEY"], "url": url, **current_params},
+                             timeout=timeout)
+            html = r.content.decode("utf-8", errors="replace")
+            (DEBUG / f"{pid}.html").write_text(html, encoding="utf-8")
+            if r.status_code == 200:
+                return {"id": pid, "url": url, "status": 200, "html": html,
+                        "error": None, "elapsed": round(time.time() - t0, 1)}
+            if attempt == max_attempts - 1:
+                return {"id": pid, "url": url, "status": r.status_code, "html": html,
+                        "error": None, "elapsed": round(time.time() - t0, 1)}
+        except Exception as e:
+            if attempt == max_attempts - 1:
+                return {"id": pid, "url": url, "status": None, "html": "",
+                        "error": str(e), "elapsed": round(time.time() - t0, 1)}
+
+    return {"id": pid, "url": url, "status": None, "html": "", "error": "unreachable",
+            "elapsed": round(time.time() - t0, 1)}
 
 
 # ---------------------------------------------------------------------------
@@ -590,11 +607,17 @@ def cmd_retry(cp: str):
     state["pages_erreur_sl"]  = still_err_sl
     state_file.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
 
+    recovered = len(err_lbc) - len(still_err_lbc) + len(err_sl) - len(still_err_sl)
+
     if still_err_lbc or still_err_sl:
         _warn(f"Pages encore en erreur — LBC: {still_err_lbc} | SeLoger: {still_err_sl}")
         _warn(f"Relance : python3 pipeline.py retry {cp}")
     else:
         _ok("Toutes les pages récupérées")
+
+    if recovered == 0:
+        _warn("Aucune nouvelle page récupérée — transform ignoré")
+        return
 
     print()
     cmd_transform(cp, commune)
