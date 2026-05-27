@@ -186,6 +186,7 @@ def _insert_stg(table: str, commune: str, cp: str, page: int,
     payload = {
         "scraped_at":  now,
         "code_postal": cp,
+        "commune":     commune,
         "page":        page,
         "url_source":  url,
         "nb_annonces": nb,

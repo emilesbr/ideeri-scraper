@@ -746,19 +746,18 @@ def run_transform(code_postal: str, commune: str = "",
             ("seloger", "stg_seloger", parse_seloger_ads),
         ]:
             print(f"\n  [{source.upper()}]")
+            q_base = sb.table(table).eq("code_postal", code_postal)
+            if commune:
+                q_base = q_base.eq("commune", commune)
             latest = _sb_execute(
-                sb.table(table).select("scraped_at")
-                .eq("code_postal", code_postal)
-                .order("scraped_at", desc=True).limit(1)
+                q_base.select("scraped_at").order("scraped_at", desc=True).limit(1)
             ).data
             if not latest:
-                print(f"    (aucune donnée pour {code_postal})")
+                print(f"    (aucune donnée pour {code_postal} {commune})")
                 continue
             latest_date = latest[0]["scraped_at"][:10]
             rows = _sb_execute(
-                sb.table(table).select("*")
-                .eq("code_postal", code_postal)
-                .gte("scraped_at", latest_date)
+                q_base.select("*").gte("scraped_at", latest_date)
             ).data
 
             seen_ids: set[str] = set()
