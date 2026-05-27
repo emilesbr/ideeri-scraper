@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=True)
 
 # ---------------------------------------------------------------------------
 # ANSI
@@ -63,8 +63,27 @@ def _sb():
     return create_client(os.environ["SUPA_URL"], os.environ["SUPA_KEY"])
 
 
+def _upload_html_direct(pid: str, content: bytes) -> None:
+    """Upload le contenu HTML brut vers Supabase Storage en arrière-plan, sans écriture disque."""
+    svc_key = os.environ.get("SUPA_SERVICE_KEY")
+    if not svc_key:
+        return
+    def _do():
+        try:
+            from supabase import create_client
+            sb = create_client(os.environ["SUPA_URL"], svc_key)
+            sb.storage.from_("debug-html").upload(
+                path=f"{pid}.html",
+                file=content,
+                file_options={"content-type": "text/html", "upsert": "true"},
+            )
+        except Exception:
+            pass
+    threading.Thread(target=_do, daemon=True).start()
+
+
 def _upload_html(filepath: Path) -> None:
-    """Upload un fichier HTML vers Supabase Storage (bucket debug-html) en arrière-plan."""
+    """Upload un fichier HTML local vers Supabase Storage en arrière-plan (legacy)."""
     svc_key = os.environ.get("SUPA_SERVICE_KEY")
     if not svc_key:
         return
@@ -80,7 +99,7 @@ def _upload_html(filepath: Path) -> None:
                 file_options={"content-type": "text/html", "upsert": "true"},
             )
         except Exception:
-            pass  # upload non bloquant — échec silencieux
+            pass
     threading.Thread(target=_do, daemon=True).start()
 
 
@@ -109,9 +128,11 @@ def _fetch(pid: str, url: str, params: dict, timeout: int) -> dict:
                              params={"api_key": os.environ["SCRAPINGBEE_KEY"], "url": url, **current_params},
                              timeout=timeout)
             html = r.content.decode("utf-8", errors="replace")
-            _html_path = DEBUG / f"{pid}.html"
-            _html_path.write_text(html, encoding="utf-8")
-            _upload_html(_html_path)
+            if r.status_code == 200:
+                _upload_html_direct(pid, r.content)
+            else:
+                _html_path = DEBUG / f"{pid}.html"
+                _html_path.write_text(html, encoding="utf-8")
             if r.status_code == 200:
                 return {"id": pid, "url": url, "status": 200, "html": html,
                         "error": None, "elapsed": round(time.time() - t0, 1)}

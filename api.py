@@ -534,7 +534,7 @@ def zone_state(cp):
         state = json.loads(matches[0].read_text(encoding="utf-8")) if matches else {}
 
     # Extraire le sl_code depuis sl_base (ex: locations=AD08FR28766)
-    sl_base = state.get("sl_base", "")
+    sl_base = state.get("sl_base") or ""
     sl_code = ""
     m = re.search(r"locations=([A-Z0-9]+)", sl_base)
     if m:
