@@ -61,7 +61,9 @@ def _fetch(pid: str, url: str, params: dict, timeout: int) -> dict:
         if attempt > 0:
             extra = attempt * 2000
             current_params["wait"] = str(int(params["wait"]) + extra)
-            print(f"    ↩ retry {attempt} wait={current_params['wait']}ms...", end=" ", flush=True)
+            pause = attempt * 15  # 15s, 30s entre tentatives — laisse LBC/ScrapingBee récupérer
+            print(f"    ↩ retry {attempt} dans {pause}s (wait={current_params['wait']}ms)...", end=" ", flush=True)
+            time.sleep(pause)
         try:
             r = requests.get(SB_URL,
                              params={"api_key": os.environ["SCRAPINGBEE_KEY"], "url": url, **current_params},
