@@ -147,11 +147,10 @@ def _lbc_base(commune: str, cp: str) -> str:
 
 
 def _lbc_page(base_url: str, page: int) -> str:
-    """Insère /p-N dans le path LBC avant la query string."""
-    if "?" in base_url:
-        path, qs = base_url.split("?", 1)
-        return f"{path}/p-{page}?{qs}"
-    return f"{base_url}/p-{page}"
+    """Ajoute &page=N pour la pagination LBC (page 1 = pas de paramètre)."""
+    if page <= 1:
+        return base_url
+    return f"{base_url}&page={page}"
 
 
 def _sl_base(code: str) -> str:
