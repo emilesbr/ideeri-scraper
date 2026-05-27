@@ -503,8 +503,11 @@ def upsert_annonce(ann: dict, entite_id: str | None, run_id: int, scraped_at: st
 # Marquer les annonces disparues
 # ---------------------------------------------------------------------------
 
-def mark_inactive(code_postal: str, source: str, seen_ids: set[str], scraped_at: str) -> int:
-    active = _sb_execute(sb.table("annonces").select("id_annonce").eq("code_postal", code_postal).eq("source", source).eq("est_active", True)).data
+def mark_inactive(code_postal: str, source: str, seen_ids: set[str], scraped_at: str, commune: str = "") -> int:
+    q = sb.table("annonces").select("id_annonce").eq("code_postal", code_postal).eq("source", source).eq("est_active", True)
+    if commune:
+        q = q.ilike("commune", commune)
+    active   = _sb_execute(q).data
     disparus = [r["id_annonce"] for r in active if r["id_annonce"] not in seen_ids]
     if disparus:
         _sb_execute(sb.table("annonces").update({
@@ -569,7 +572,7 @@ def update_entity_snapshots(code_postal: str, scraped_at: str) -> None:
 # Matching — deux appels sur le même score unique
 # ---------------------------------------------------------------------------
 
-def intra_entity_match(code_postal: str) -> int:
+def intra_entity_match(code_postal: str, commune: str = "") -> int:
     """Apparie LBC↔SeLoger de la même entité. Seuil 0.70.
     Action : sur_lbc/sur_seloger=True, bien_id = id_annonce LBC, match_confidence.
     Retourne le nombre de paires matchées."""
@@ -578,12 +581,13 @@ def intra_entity_match(code_postal: str) -> int:
         "id_annonce, source, type_bien, surface, prix_affiche, nb_pieces, "
         "dpe, ges, annee_construction, entite_id, bien_id"
     )
-    lbc = _sb_execute(sb.table("annonces").select(fields)
-           .eq("code_postal", code_postal).eq("source", "lbc").eq("est_active", True)
-           .not_.is_("entite_id", "null")).data
-    sl  = _sb_execute(sb.table("annonces").select(fields)
-           .eq("code_postal", code_postal).eq("source", "seloger").eq("est_active", True)
-           .not_.is_("entite_id", "null")).data
+    q_lbc = sb.table("annonces").select(fields).eq("code_postal", code_postal).eq("source", "lbc").eq("est_active", True).not_.is_("entite_id", "null")
+    q_sl  = sb.table("annonces").select(fields).eq("code_postal", code_postal).eq("source", "seloger").eq("est_active", True).not_.is_("entite_id", "null")
+    if commune:
+        q_lbc = q_lbc.ilike("commune", commune)
+        q_sl  = q_sl.ilike("commune", commune)
+    lbc = _sb_execute(q_lbc).data
+    sl  = _sb_execute(q_sl).data
     if not lbc or not sl:
         return 0
 
@@ -621,7 +625,7 @@ def intra_entity_match(code_postal: str) -> int:
     return n
 
 
-def cross_entity_match(code_postal: str) -> dict:
+def cross_entity_match(code_postal: str, commune: str = "") -> dict:
     """Regroupe les biens identiques publiés par entités différentes. Seuil 0.80.
     Union-Find. Action : cluster_bien_id + bien_id partagés sur tous les membres.
     Retourne {n_clusters, n_annonces}."""
@@ -630,9 +634,10 @@ def cross_entity_match(code_postal: str) -> dict:
         "id_annonce, source, type_bien, surface, prix_affiche, nb_pieces, "
         "dpe, ges, annee_construction, entite_id, cluster_bien_id"
     )
-    ads = _sb_execute(sb.table("annonces").select(fields)
-           .eq("code_postal", code_postal).eq("est_active", True)
-           .not_.is_("entite_id", "null")).data
+    q = sb.table("annonces").select(fields).eq("code_postal", code_postal).eq("est_active", True).not_.is_("entite_id", "null")
+    if commune:
+        q = q.ilike("commune", commune)
+    ads = _sb_execute(q).data
     if len(ads) < 2:
         return {"n_clusters": 0, "n_annonces": 0}
 
@@ -784,16 +789,16 @@ def run_transform(code_postal: str, commune: str = "",
                     "processed_at": scraped_at,
                 }).in_("id", stg_ids))
 
-            n_disparus = mark_inactive(code_postal, source, seen_ids, scraped_at)
+            n_disparus = mark_inactive(code_postal, source, seen_ids, scraped_at, commune)
             stats["disparues"] += n_disparus
             if n_disparus:
                 print(f"    {n_disparus} annonces marquées inactives")
 
-        n_intra = intra_entity_match(code_postal)
+        n_intra = intra_entity_match(code_postal, commune)
         if n_intra:
             print(f"\n  {n_intra} paires intra-entité matchées (LBC↔SeLoger, seuil 0.70)")
 
-        cl = cross_entity_match(code_postal)
+        cl = cross_entity_match(code_postal, commune)
         if cl["n_annonces"]:
             print(f"  {cl['n_clusters']} clusters multi-entités ({cl['n_annonces']} annonces, seuil 0.80)")
 
