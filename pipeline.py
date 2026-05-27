@@ -115,7 +115,7 @@ def _lbc_base(commune: str, cp: str) -> str:
         "https://www.leboncoin.fr/recherche"
         "?category=9"
         f"&locations={slug}_{cp}"
-        "&real_estate_type=2"  # 2 = Appartement
+        "&real_estate_type=1,2"  # 1=Maison, 2=Appartement (type réel géré par le parser)
     )
 
 
