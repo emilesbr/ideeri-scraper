@@ -744,6 +744,7 @@ def run_transform(code_postal: str, commune: str = "",
     print(f"  run_id = {run_id}")
 
     stats = {"trouvees": 0, "nouvelles": 0, "disparues": 0, "prix_modifies": 0}
+    _upsert_error = None
 
     try:
         for source, table, parser in [
@@ -794,6 +795,12 @@ def run_transform(code_postal: str, commune: str = "",
             if n_disparus:
                 print(f"    {n_disparus} annonces marquées inactives")
 
+    except Exception as e:
+        _upsert_error = e
+        print(f"\n  ⚠ Upsert interrompu ({e}) — le matching va quand même tourner")
+
+    # Matching toujours exécuté, même si l'upsert a crashé partiellement
+    try:
         n_intra = intra_entity_match(code_postal, commune)
         if n_intra:
             print(f"\n  {n_intra} paires intra-entité matchées (LBC↔SeLoger, seuil 0.70)")
@@ -803,35 +810,33 @@ def run_transform(code_postal: str, commune: str = "",
             print(f"  {cl['n_clusters']} clusters multi-entités ({cl['n_annonces']} annonces, seuil 0.80)")
 
         update_entity_snapshots(code_postal, scraped_at)
+    except Exception as e:
+        print(f"\n  ⚠ Matching/snapshots échoué : {e}")
 
-        duree = int(time.time() - t0)
+    duree = int(time.time() - t0)
+    statut = "error" if _upsert_error else "ok"
+    try:
         _sb_execute(sb.table("runs").update({
             "nb_annonces_trouvees": stats["trouvees"],
             "nb_nouvelles":         stats["nouvelles"],
             "nb_disparues":         stats["disparues"],
             "nb_prix_modifies":     stats["prix_modifies"],
             "duree_secondes":       duree,
-            "statut":               "ok",
+            "statut":               statut,
         }).eq("id", run_id))
+    except Exception:
+        pass
 
-        print(f"\n  Résultat run #{run_id} ({duree}s) :")
-        print(f"    trouvées     : {stats['trouvees']}")
-        print(f"    nouvelles    : {stats['nouvelles']}")
-        print(f"    disparues    : {stats['disparues']}")
-        print(f"    prix modifiés: {stats['prix_modifies']}")
-
-    except Exception as e:
-        duree = int(time.time() - t0)
-        try:
-            _sb_execute(sb.table("runs").update({
-                "statut": "error", "duree_secondes": duree,
-                "nb_annonces_trouvees": stats["trouvees"],
-            }).eq("id", run_id))
-        except Exception:
-            pass
-        print(f"\n  ❌ Transform run #{run_id} interrompu après {duree}s : {e}")
+    if _upsert_error:
+        print(f"\n  ❌ Transform run #{run_id} interrompu après {duree}s : {_upsert_error}")
         print(f"  Relance : python3 pipeline.py transform {code_postal} {commune}")
-        raise
+        raise _upsert_error
+
+    print(f"\n  Résultat run #{run_id} ({duree}s) :")
+    print(f"    trouvées     : {stats['trouvees']}")
+    print(f"    nouvelles    : {stats['nouvelles']}")
+    print(f"    disparues    : {stats['disparues']}")
+    print(f"    prix modifiés: {stats['prix_modifies']}")
 
 
 if __name__ == "__main__":
