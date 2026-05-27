@@ -25,9 +25,11 @@ def _sb():
 
 
 def _norm(s: str) -> str:
-    """Normalise commune : minuscules + supprime accents pour comparaison."""
+    """Normalise commune : minuscules + supprime accents + tirets = espaces."""
     nfkd = unicodedata.normalize("NFKD", (s or "").lower())
-    return "".join(c for c in nfkd if not unicodedata.combining(c)).strip()
+    s2   = "".join(c for c in nfkd if not unicodedata.combining(c))
+    s2   = re.sub(r"[-\s]+", " ", s2)
+    return s2.strip()
 
 
 def _strip_ansi(s: str) -> str:
@@ -141,8 +143,11 @@ def zone(cp):
         norm_cf = _norm(commune_filter)
         rows = [r for r in rows if _norm(r.get("commune", "")) == norm_cf]
 
+    # Vérifier que la zone existe au moins dans runs avant de renvoyer 404
     if not rows:
-        return jsonify({"error": "zone inconnue"}), 404
+        runs_check = sb.table("runs").select("id").eq("code_postal", cp).limit(1).execute().data
+        if not runs_check:
+            return jsonify({"error": "zone inconnue"}), 404
 
     nb_annonces = len(rows)
     nb_dpe      = sum(1 for r in rows if r.get("dpe"))
@@ -240,7 +245,7 @@ def zone(cp):
     return jsonify({
         # ── Identité ──
         "cp":         cp,
-        "commune":    commune_filter or rows[0].get("commune") or cp,
+        "commune":    commune_filter or (rows[0].get("commune") if rows else None) or cp,
         "last_run":   last_run,
         "run_status": run_status,
 
