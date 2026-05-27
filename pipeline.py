@@ -12,6 +12,7 @@ Usage :
 """
 
 import argparse, json, math, os, re, sys, time, unicodedata
+from urllib.parse import quote as _urlquote
 import lzstring, requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -154,8 +155,8 @@ def _geocode(commune: str, cp: str) -> tuple[float, float] | None:
 
 
 def _lbc_base(commune: str, cp: str) -> str:
-    slug = unicodedata.normalize("NFKD", commune)
-    slug = "".join(c for c in slug if not unicodedata.combining(c))
+    # Garder les accents — LBC en a besoin pour identifier la commune (Vérin ≠ Verin)
+    slug = _urlquote(commune, safe="-")
     coords = _geocode(commune, cp)
     if coords:
         lat, lon = coords
@@ -164,15 +165,17 @@ def _lbc_base(commune: str, cp: str) -> str:
             "?category=9"
             f"&locations={slug}_{cp}__{lat}_{lon}_5000"
             "&immo_sell_type=old"
+            "&real_estate_type=2,1"
             "&owner_type=all"
         )
-    # Fallback sans géocodage — appartements uniquement
-    _warn(f"Géocodage échoué pour {commune} {cp} — fallback appartements seuls")
+    _warn(f"Géocodage échoué pour {commune} {cp} — fallback sans coordonnées")
     return (
         "https://www.leboncoin.fr/recherche"
         "?category=9"
         f"&locations={slug}_{cp}"
-        "&real_estate_type=2"
+        "&immo_sell_type=old"
+        "&real_estate_type=2,1"
+        "&owner_type=all"
     )
 
 

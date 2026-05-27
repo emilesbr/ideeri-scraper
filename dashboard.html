@@ -232,6 +232,7 @@ tr:hover td { background: #fafbfc; cursor: pointer; }
     </div>
     <div class="m-foot">
       <button class="btn btn-ghost" onclick="closeRetryModal()">Annuler</button>
+      <button class="btn btn-ghost" id="retry-accept-btn" onclick="acceptIncomplete()" title="Marquer comme complet sans relancer le scraping" style="color:#718096">✓ Accepter état actuel</button>
       <button class="btn btn-primary" id="retry-action-btn" onclick="startRetry()">↩ Retry</button>
     </div>
   </div>
@@ -358,6 +359,25 @@ function openRetryModal(cp, commune, alert) {
 function closeRetryModal() {
   document.getElementById('retry-overlay').classList.remove('open');
   document.getElementById('retry-minimize-btn').style.display = 'none';
+}
+
+async function acceptIncomplete() {
+  const cp = retryCurrentCp, commune = retryCurrentCommune;
+  const btn = document.getElementById('retry-accept-btn');
+  btn.disabled = true; btn.textContent = '…';
+  try {
+    const res = await fetch(`${API}/zone/${cp}/accept-incomplete`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({commune})
+    });
+    const d = await res.json();
+    closeRetryModal();
+    loadAlerts();
+    loadZones();
+  } catch(e) {
+    btn.disabled = false; btn.textContent = '✓ Accepter état actuel';
+  }
 }
 
 function updateWaitLabel() {

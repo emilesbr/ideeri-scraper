@@ -510,6 +510,40 @@ def incomplete():
 
 
 # ---------------------------------------------------------------------------
+# POST /api/zone/<cp>/accept-incomplete  — supprime les erreurs de pages du state
+# ---------------------------------------------------------------------------
+
+@app.route("/api/zone/<cp>/accept-incomplete", methods=["POST"])
+def accept_incomplete(cp):
+    commune = (request.json or {}).get("commune", "")
+    if not commune:
+        return jsonify({"error": "commune manquante"}), 400
+
+    debug_dir = HERE / "debug"
+    slug = re.sub(r"[^a-z0-9]+", "_",
+                  "".join(c for c in unicodedata.normalize("NFKD", commune.lower())
+                          if not unicodedata.combining(c))).strip("_")
+    sf = debug_dir / f"scrape_state_{cp}_{slug}.json"
+
+    if not sf.exists():
+        # Chercher parmi tous les state files du CP
+        matches = [f for f in debug_dir.glob(f"scrape_state_{cp}_*.json")
+                   if _norm(json.loads(f.read_text()).get("commune", "")) == _norm(commune)]
+        if not matches:
+            return jsonify({"ok": True, "msg": "Pas de state file trouvé — rien à nettoyer"})
+        sf = matches[0]
+
+    state = json.loads(sf.read_text(encoding="utf-8"))
+    cleared_lbc = list(state.get("pages_erreur_lbc") or [])
+    cleared_sl  = list(state.get("pages_erreur_sl")  or [])
+    state["pages_erreur_lbc"] = []
+    state["pages_erreur_sl"]  = []
+    sf.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    return jsonify({"ok": True, "cleared_lbc": cleared_lbc, "cleared_sl": cleared_sl})
+
+
+# ---------------------------------------------------------------------------
 # POST /api/retry/<cp>?wait=8000  — SSE streaming du retry
 # ---------------------------------------------------------------------------
 
