@@ -15,6 +15,18 @@ from supabase import create_client
 load_dotenv()
 sb = create_client(os.environ["SUPA_URL"], os.environ["SUPA_KEY"])
 
+
+def _sb_execute(query, retries: int = 3, delay: float = 2.0):
+    """Execute a Supabase query with automatic retry on network errors."""
+    for attempt in range(retries):
+        try:
+            return query.execute()
+        except Exception as e:
+            if attempt == retries - 1:
+                raise
+            print(f"    [Supabase timeout, retry {attempt + 1}/{retries - 1}...]")
+            time.sleep(delay * (attempt + 1))
+
 # ---------------------------------------------------------------------------
 # Normalisation
 # ---------------------------------------------------------------------------
@@ -318,15 +330,16 @@ def upsert_entity(e: dict, scraped_at: str) -> str | None:
     sig = entity_signature(siren, type_e, nom, cp)
 
     # Chercher entité existante par signature exacte
-    existing = sb.table("entites").select("*").eq("signature", sig).execute().data
+    existing = _sb_execute(sb.table("entites").select("*").eq("signature", sig)).data
 
     # Fallback : si pas de SIREN et que la signature est nom_*, chercher une entité
     # existante avec le même nom_commercial qui, elle, possède un SIREN.
     # Cas typique : SeLoger crée nom_NORMNAME car SIRET absent, mais LBC a déjà
     # créé siren_XXXXXXXXX pour la même agence.
     if not existing and sig.startswith("nom_"):
-        existing_by_name = sb.table("entites").select("*") \
-            .eq("nom_commercial", nom).not_.is_("siren", "null").execute().data
+        existing_by_name = _sb_execute(
+            sb.table("entites").select("*").eq("nom_commercial", nom).not_.is_("siren", "null")
+        ).data
         if existing_by_name:
             existing = existing_by_name  # fusionner silencieusement
 
@@ -356,7 +369,7 @@ def upsert_entity(e: dict, scraped_at: str) -> str | None:
         if cps != row.get("codes_postaux"):
             updates["codes_postaux"] = cps
         if updates:
-            sb.table("entites").update(updates).eq("id", row["id"]).execute()
+            _sb_execute(sb.table("entites").update(updates).eq("id", row["id"]))
         return row["id"]
 
     # Nouvelle entité
@@ -380,7 +393,7 @@ def upsert_entity(e: dict, scraped_at: str) -> str | None:
     else:
         new_row["nom_seloger"] = nom
 
-    res = sb.table("entites").insert(new_row).execute()
+    res = _sb_execute(sb.table("entites").insert(new_row))
     return res.data[0]["id"] if res.data else None
 
 
