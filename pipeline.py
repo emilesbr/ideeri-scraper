@@ -115,8 +115,8 @@ def _lbc_base(commune: str, cp: str) -> str:
         "https://www.leboncoin.fr/recherche"
         "?category=9"
         f"&locations={slug}_{cp}"
-        # Pas de filtre real_estate_type : category=9 = ventes immo (maisons + appartements)
-        # Le parser exclut les types non résidentiels (terrain, parking…)
+        "&real_estate_type=2,1"   # 2=Appartement, 1=Maison (ordre LBC requis)
+        "&owner_type=all"          # Pros + particuliers
     )
 
 
