@@ -35,6 +35,17 @@ def _ok(msg):   print(f"  {G}✅{RST} {msg}")
 def _err(msg):  print(f"  {R}❌{RST} {msg}")
 def _warn(msg): print(f"  {Y}⚠️ {RST} {msg}")
 
+
+def _state_slug(commune: str) -> str:
+    """Normalise le nom de commune pour le nom de fichier : 'La Chapelle-Villars' → 'la_chapelle_villars'."""
+    nfkd = unicodedata.normalize("NFKD", (commune or "").lower())
+    s = "".join(c for c in nfkd if not unicodedata.combining(c))
+    return re.sub(r"[^a-z0-9]+", "_", s).strip("_")
+
+
+def _state_file(cp: str, commune: str) -> Path:
+    return DEBUG / f"scrape_state_{cp}_{_state_slug(commune)}.json"
+
 # ---------------------------------------------------------------------------
 # ScrapingBee
 # ---------------------------------------------------------------------------
@@ -357,15 +368,15 @@ def cmd_status(cp: str):
     else:
         print(f"  📅 dernier run   : aucun")
 
-    # Scrape incomplet (state file)
-    state_file = DEBUG / f"scrape_state_{cp}.json"
-    if state_file.exists():
-        state = json.loads(state_file.read_text(encoding="utf-8"))
+    # Scrape incomplet (state files)
+    for sf in sorted(DEBUG.glob(f"scrape_state_{cp}_*.json")):
+        state = json.loads(sf.read_text(encoding="utf-8"))
         err_lbc = state.get("pages_erreur_lbc", [])
         err_sl  = state.get("pages_erreur_sl",  [])
         if err_lbc or err_sl:
-            _warn(f"Scrape incomplet (fichier local) — LBC: {err_lbc} | SeLoger: {err_sl}")
-            print(f"    → {C}python3 pipeline.py retry {cp}{RST}")
+            comm = state.get("commune", cp)
+            _warn(f"Scrape incomplet ({comm}) — LBC: {err_lbc} | SeLoger: {err_sl}")
+            print(f"    → {C}python3 pipeline.py retry {cp} {comm}{RST}")
 
     # Matching
     n_intra = sb.table("annonces").select("id_annonce", count="exact").eq(
@@ -404,7 +415,7 @@ def _save_scrape_state(cp: str, commune: str, lbc_base: str | None, sl_base: str
         "pages_erreur_sl":  sorted(err_sl),
         "scraped_at": datetime.now(timezone.utc).isoformat(),
     }
-    (DEBUG / f"scrape_state_{cp}.json").write_text(
+    _state_file(cp, commune).write_text(
         json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8"
     )
 
@@ -549,7 +560,7 @@ def cmd_scrape(cp: str, commune: str, sl_code: str | None = None,
     has_errors = bool(err_lbc or err_sl)
     if has_errors:
         print(f"\n  {Y}Run incomplet — pour compléter les pages manquantes :{RST}")
-        print(f"    {C}python3 pipeline.py retry {cp}{RST}")
+        print(f"    {C}python3 pipeline.py retry {cp} {commune}{RST}")
     else:
         print(f"\n  → Lance transform : {C}python3 pipeline.py transform {cp} {commune}{RST}")
 
@@ -563,14 +574,36 @@ def cmd_scrape(cp: str, commune: str, sl_code: str | None = None,
 # retry
 # ---------------------------------------------------------------------------
 
-def cmd_retry(cp: str, wait_override: int | None = None):
-    state_file = DEBUG / f"scrape_state_{cp}.json"
-    if not state_file.exists():
-        _err(f"Pas d'état de scrape trouvé pour {cp}")
-        print(f"  Lance d'abord : {C}python3 pipeline.py run <cp> <commune>{RST}")
+def cmd_retry(cp: str, commune: str | None = None, wait_override: int | None = None):
+    if commune:
+        candidates = [_state_file(cp, commune)]
+    else:
+        candidates = sorted(DEBUG.glob(f"scrape_state_{cp}_*.json"))
+
+    # Filtrer ceux qui ont vraiment des erreurs
+    states_with_errors = []
+    for sf in candidates:
+        if sf.exists():
+            st = json.loads(sf.read_text(encoding="utf-8"))
+            if st.get("pages_erreur_lbc") or st.get("pages_erreur_sl"):
+                states_with_errors.append((sf, st))
+
+    if not states_with_errors:
+        if candidates:
+            _ok(f"Run {cp} complet — aucune page manquante")
+        else:
+            _err(f"Pas d'état de scrape trouvé pour {cp}")
+            print(f"  Lance d'abord : {C}python3 pipeline.py run <cp> <commune>{RST}")
         return
 
-    state    = json.loads(state_file.read_text(encoding="utf-8"))
+    if len(states_with_errors) > 1:
+        _warn(f"Plusieurs communes incomplètes pour {cp} :")
+        for sf, st in states_with_errors:
+            comm = st.get("commune", "?")
+            print(f"    → python3 pipeline.py retry {cp} {comm}")
+        return
+
+    state_file, state = states_with_errors[0]
     commune  = state["commune"]
     err_lbc  = state.get("pages_erreur_lbc", [])
     err_sl   = state.get("pages_erreur_sl",  [])
@@ -657,7 +690,7 @@ def cmd_retry(cp: str, wait_override: int | None = None):
 
     if still_err_lbc or still_err_sl:
         _warn(f"Pages encore en erreur — LBC: {still_err_lbc} | SeLoger: {still_err_sl}")
-        _warn(f"Relance : python3 pipeline.py retry {cp}")
+        _warn(f"Relance : python3 pipeline.py retry {cp} {commune}")
     else:
         _ok("Toutes les pages récupérées")
 
@@ -724,7 +757,7 @@ def cmd_run(cp: str, commune: str, sl_code: str | None = None,
         _warn(f"Run incomplet — pages LBC: {err_lbc} | SeLoger: {err_sl}")
         rep = input("  Lancer le transform quand même (données partielles) ? [o/n] : ").strip().lower()
         if rep != "o":
-            print(f"  Transform annulé. Complète d'abord : {C}python3 pipeline.py retry {cp}{RST}")
+            print(f"  Transform annulé. Complète d'abord : {C}python3 pipeline.py retry {cp} {commune}{RST}")
             return
 
     print()
@@ -746,7 +779,7 @@ def cmd_run(cp: str, commune: str, sl_code: str | None = None,
         _warn(f"Enrichissement SIRENE non bloquant : {e}")
 
     if err_lbc or err_sl:
-        _warn(f"Run partiel terminé. Pour compléter : {C}python3 pipeline.py retry {cp}{RST}")
+        _warn(f"Run partiel terminé. Pour compléter : {C}python3 pipeline.py retry {cp} {commune}{RST}")
 
     print(f"\n  {B}Durée totale : {int(time.time() - t0)}s{RST}")
 
@@ -835,6 +868,7 @@ def main():
 
     p = sub.add_parser("retry", help="Re-scrape les pages manquantes d'un run incomplet")
     p.add_argument("cp")
+    p.add_argument("commune", nargs="?", default=None, help="Commune (optionnel si CP unique)")
     p.add_argument("--wait", type=int, default=None, dest="wait_override",
                    help="Override wait LBC en ms (ex: 8000)")
 
@@ -853,7 +887,7 @@ def main():
         "scrape":    lambda: cmd_scrape(args.cp, args.commune, getattr(args, "sl_code", None), getattr(args, "source", None)),
         "transform": lambda: cmd_transform(args.cp, args.commune),
         "run":       lambda: cmd_run(args.cp, args.commune, getattr(args, "sl_code", None), getattr(args, "source", None)),
-        "retry":     lambda: cmd_retry(args.cp, getattr(args, "wait_override", None)),
+        "retry":     lambda: cmd_retry(args.cp, getattr(args, "commune", None), getattr(args, "wait_override", None)),
         "reset":     lambda: cmd_reset(args.cp),
         "enrich":    lambda: cmd_enrich(getattr(args, "all", False), getattr(args, "dry_run", False)),
     }[args.cmd]()
