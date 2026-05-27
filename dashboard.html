@@ -193,6 +193,10 @@ tr:hover td { background: #fafbfc; cursor: pointer; }
           <label>Code SeLoger <span style="color:#a0aec0;font-weight:400">(optionnel — ex : AD08FR28776)</span></label>
           <input type="text" id="r-slcode" placeholder="AD08FRXXXXX">
         </div>
+        <div class="form-row">
+          <label>Localisation LBC <span style="color:#a0aec0;font-weight:400">(optionnel — coller l'URL LBC depuis le navigateur)</span></label>
+          <input type="text" id="r-lbcloc" placeholder="https://www.leboncoin.fr/recherche?… ou Vérin_42410__45.45_4.75_2455">
+        </div>
         <div class="form-row"><label>Source</label>
           <select id="r-source">
             <option value="">LBC + SeLoger</option>
@@ -712,6 +716,7 @@ async function startRun() {
   const cp      = document.getElementById('r-cp').value.trim();
   const commune = document.getElementById('r-commune').value.trim();
   const slCode  = document.getElementById('r-slcode').value.trim();
+  const lbcLoc  = document.getElementById('r-lbcloc').value.trim();
   const source  = document.getElementById('r-source').value;
   if (!cp||!commune) { alert('Code postal et commune requis'); return; }
 
@@ -734,7 +739,9 @@ async function startRun() {
     const resp = await fetch(`${API}/run`, {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({ cp, commune,
-        ...(slCode?{sl_code:slCode}:{}), ...(source?{source}:{}) })
+        ...(slCode?{sl_code:slCode}:{}),
+        ...(lbcLoc?{lbc_loc:lbcLoc}:{}),
+        ...(source?{source}:{}) })
     });
     const reader=resp.body.getReader(), decoder=new TextDecoder();
     let buf='';

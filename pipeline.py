@@ -154,7 +154,25 @@ def _geocode(commune: str, cp: str) -> tuple[float, float] | None:
         return None
 
 
-def _lbc_base(commune: str, cp: str) -> str:
+def _lbc_base(commune: str, cp: str, lbc_loc: str | None = None) -> str:
+    """Construit l'URL LBC de base.
+    lbc_loc : valeur du paramètre locations= (ou URL complète) fournie manuellement.
+    """
+    if lbc_loc:
+        # Accepte une URL complète ou juste la valeur locations=
+        if lbc_loc.startswith("http"):
+            m = re.search(r"[?&]locations=([^&]+)", lbc_loc)
+            loc = m.group(1) if m else _urlquote(lbc_loc, safe="%-._~")
+        else:
+            loc = lbc_loc
+        return (
+            "https://www.leboncoin.fr/recherche"
+            "?category=9"
+            f"&locations={loc}"
+            "&immo_sell_type=old"
+            "&real_estate_type=2,1"
+            "&owner_type=all"
+        )
     # Garder les accents — LBC en a besoin pour identifier la commune (Vérin ≠ Verin)
     slug = _urlquote(commune, safe="-")
     coords = _geocode(commune, cp)
@@ -424,11 +442,11 @@ def _save_scrape_state(cp: str, commune: str, lbc_base: str | None, sl_base: str
 
 
 def cmd_scrape(cp: str, commune: str, sl_code: str | None = None,
-               source: str | None = None) -> dict | None:
+               source: str | None = None, lbc_loc: str | None = None) -> dict | None:
     do_sl  = source in (None, "seloger")
     do_lbc = source in (None, "lbc")
     sb       = _sb()
-    lbc_base = _lbc_base(commune, cp)
+    lbc_base = _lbc_base(commune, cp, lbc_loc)
     sl_base  = _sl_base(sl_code if sl_code else cp)
 
     label = f" [{source.upper()}]" if source else ""
@@ -747,9 +765,9 @@ def cmd_transform(cp: str, commune: str,
 # ---------------------------------------------------------------------------
 
 def cmd_run(cp: str, commune: str, sl_code: str | None = None,
-            source: str | None = None):
+            source: str | None = None, lbc_loc: str | None = None):
     t0 = time.time()
-    result = cmd_scrape(cp, commune, sl_code, source)
+    result = cmd_scrape(cp, commune, sl_code, source, lbc_loc)
     if result is None:
         return
 
@@ -855,6 +873,8 @@ def main():
     p.add_argument("commune")
     p.add_argument("--sl-code", dest="sl_code", default=None,
                    help="Code SeLoger (ex: AD08FR28776) — optionnel, par défaut = CP")
+    p.add_argument("--lbc-loc", dest="lbc_loc", default=None,
+                   help="Localisation LBC (URL complète ou valeur locations=, ex: Vérin_42410__45.45439_4.75312_2455)")
     p.add_argument("--source", choices=["seloger", "lbc"], default=None,
                    help="Scraper une seule source (par défaut : les deux)")
 
@@ -866,6 +886,8 @@ def main():
     p.add_argument("cp")
     p.add_argument("commune")
     p.add_argument("--sl-code", dest="sl_code", default=None)
+    p.add_argument("--lbc-loc", dest="lbc_loc", default=None,
+                   help="Localisation LBC (URL complète ou valeur locations=)")
     p.add_argument("--source", choices=["seloger", "lbc"], default=None,
                    help="Scraper une seule source (par défaut : les deux)")
 
@@ -887,9 +909,9 @@ def main():
     {
         "check":     lambda: cmd_check(),
         "status":    lambda: cmd_status(args.cp),
-        "scrape":    lambda: cmd_scrape(args.cp, args.commune, getattr(args, "sl_code", None), getattr(args, "source", None)),
+        "scrape":    lambda: cmd_scrape(args.cp, args.commune, getattr(args, "sl_code", None), getattr(args, "source", None), getattr(args, "lbc_loc", None)),
         "transform": lambda: cmd_transform(args.cp, args.commune),
-        "run":       lambda: cmd_run(args.cp, args.commune, getattr(args, "sl_code", None), getattr(args, "source", None)),
+        "run":       lambda: cmd_run(args.cp, args.commune, getattr(args, "sl_code", None), getattr(args, "source", None), getattr(args, "lbc_loc", None)),
         "retry":     lambda: cmd_retry(args.cp, getattr(args, "commune", None), getattr(args, "wait_override", None)),
         "reset":     lambda: cmd_reset(args.cp),
         "enrich":    lambda: cmd_enrich(getattr(args, "all", False), getattr(args, "dry_run", False)),

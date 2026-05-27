@@ -401,6 +401,7 @@ def run_pipeline():
     cp      = (data.get("cp") or "").strip()
     commune = (data.get("commune") or "").strip()
     sl_code = (data.get("sl_code") or "").strip() or None
+    lbc_loc = (data.get("lbc_loc") or "").strip() or None
     source  = data.get("source") or None
 
     if not cp or not commune:
@@ -409,6 +410,8 @@ def run_pipeline():
     cmd = [sys.executable, "pipeline.py", "run", cp, commune]
     if sl_code:
         cmd += ["--sl-code", sl_code]
+    if lbc_loc:
+        cmd += ["--lbc-loc", lbc_loc]
     if source:
         cmd += ["--source", source]
 
