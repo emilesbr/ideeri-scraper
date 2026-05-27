@@ -334,14 +334,37 @@ def cmd_status(cp: str):
     print(f"     └── Les deux        : {nb_2} ({pct(nb_2)})")
     print(f"  ✅ mandats réels : {len(b_rows)} (ratio {ratio}/bien)")
 
-    # Dernier run
-    runs = sb.table("runs").select("id, scraped_at").eq("code_postal", cp).order(
-        "scraped_at", desc=True).limit(1).execute().data
+    # Runs récents
+    runs = sb.table("runs").select(
+        "id, scraped_at, statut, nb_annonces_trouvees, pages_erreur_lbc, pages_erreur_sl"
+    ).eq("code_postal", cp).order("scraped_at", desc=True).limit(5).execute().data
+
     if runs:
-        dt = runs[0]["scraped_at"][:16].replace("T", " ")
-        print(f"  📅 dernier run   : {dt} (run #{runs[0]['id']})")
+        last = runs[0]
+        dt     = last["scraped_at"][:16].replace("T", " ")
+        statut = last["statut"] or "?"
+        icon   = G if statut == "ok" else (Y if statut == "running" else R)
+        print(f"  📅 dernier run   : {dt} (run #{last['id']}) — {icon}{statut}{RST}")
+        if statut == "running":
+            _warn(f"Run #{last['id']} toujours 'running' — transform crashé ? Relance : python3 pipeline.py transform {cp} <commune>")
+        if statut == "error":
+            _warn(f"Run #{last['id']} en erreur — relance : python3 pipeline.py transform {cp} <commune>")
+        err_lbc = last.get("pages_erreur_lbc") or []
+        err_sl  = last.get("pages_erreur_sl")  or []
+        if err_lbc or err_sl:
+            _warn(f"Pages manquantes — LBC: {err_lbc} | SeLoger: {err_sl} → python3 pipeline.py retry {cp}")
     else:
         print(f"  📅 dernier run   : aucun")
+
+    # Scrape incomplet (state file)
+    state_file = DEBUG / f"scrape_state_{cp}.json"
+    if state_file.exists():
+        state = json.loads(state_file.read_text(encoding="utf-8"))
+        err_lbc = state.get("pages_erreur_lbc", [])
+        err_sl  = state.get("pages_erreur_sl",  [])
+        if err_lbc or err_sl:
+            _warn(f"Scrape incomplet (fichier local) — LBC: {err_lbc} | SeLoger: {err_sl}")
+            print(f"    → {C}python3 pipeline.py retry {cp}{RST}")
 
     # Matching
     n_intra = sb.table("annonces").select("id_annonce", count="exact").eq(
@@ -581,16 +604,32 @@ def cmd_retry(cp: str):
     still_err_sl  = list(err_sl)
 
     print(f"\n  Scraping {len(tasks)} page(s)...\n")
+
+    def _fetch_or_cache(src: str, p: int, url: str, params: dict, to: int) -> dict:
+        """Utilise le HTML local si déjà scrapé, sinon va sur ScrapingBee."""
+        pid = f"{src}_{cp}_p{p}"
+        cached = DEBUG / f"{pid}_retry.html"
+        if not cached.exists():
+            cached = DEBUG / f"{pid}_diag.html"
+        if cached.exists():
+            html = cached.read_text(encoding="utf-8")
+            # Vérifie que c'est bien une vraie page avec données
+            if "__NEXT_DATA__" in html or "__UFRN_FETCHER__" in html:
+                print(f"  {C}↩ {src:8s} p{p} | cache local{RST}")
+                return {"id": pid, "url": url, "status": 200, "html": html, "error": None, "elapsed": 0}
+        return _fetch(pid + "_retry", url, params, to)
+
     with ThreadPoolExecutor(max_workers=5) as ex:
         fmap = {
-            ex.submit(_fetch, f"{src}_{cp}_p{p}_retry", url, params, to): (src, p, url)
+            ex.submit(_fetch_or_cache, src, p, url, params, to): (src, p, url)
             for src, p, url, params, to in tasks
         }
         for fut in as_completed(fmap):
             src, p, url = fmap[fut]
             r = fut.result()
-            icon = f"{G}✓{RST}" if r["status"] == 200 else f"{R}✗{RST}"
-            print(f"  {icon} {src:8s} p{p} | HTTP {r['status'] or 'ERR'} | {r['elapsed']}s")
+            if r["elapsed"] > 0:  # pas depuis cache
+                icon = f"{G}✓{RST}" if r["status"] == 200 else f"{R}✗{RST}"
+                print(f"  {icon} {src:8s} p{p} | HTTP {r['status'] or 'ERR'} | {r['elapsed']}s")
 
             if r.get("status") != 200:
                 continue
@@ -638,7 +677,11 @@ def cmd_retry(cp: str):
 # transform
 # ---------------------------------------------------------------------------
 
-def cmd_transform(cp: str, commune: str):
+def cmd_transform(cp: str, commune: str,
+                  pages_erreur_lbc: list[int] | None = None,
+                  pages_erreur_sl:  list[int] | None = None,
+                  lbc_total_attendu: int | None = None,
+                  sl_total_attendu:  int | None = None):
     sb = _sb()
     has_lbc = bool(sb.table("stg_lbc").select("id").eq(
         "data_brute->_meta->>code_postal", cp).limit(1).execute().data)
@@ -651,7 +694,11 @@ def cmd_transform(cp: str, commune: str):
 
     print(f"\n{B}=== Transform {commune} ({cp}) ==={RST}\n")
     from transform import run_transform
-    run_transform(cp, commune)
+    run_transform(cp, commune,
+                  pages_erreur_lbc=pages_erreur_lbc,
+                  pages_erreur_sl=pages_erreur_sl,
+                  lbc_total_attendu=lbc_total_attendu,
+                  sl_total_attendu=sl_total_attendu)
 
 
 # ---------------------------------------------------------------------------
@@ -676,7 +723,11 @@ def cmd_run(cp: str, commune: str, sl_code: str | None = None,
             return
 
     print()
-    cmd_transform(cp, commune)
+    cmd_transform(cp, commune,
+                  pages_erreur_lbc=err_lbc or None,
+                  pages_erreur_sl=err_sl or None,
+                  lbc_total_attendu=result.get("lbc_pages"),
+                  sl_total_attendu=result.get("sl_pages"))
 
     print(f"\n  Enrichissement SIRENE des nouvelles entités...")
     try:

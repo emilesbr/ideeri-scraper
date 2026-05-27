@@ -519,9 +519,10 @@ def mark_inactive(code_postal: str, source: str, seen_ids: set[str], scraped_at:
 # ---------------------------------------------------------------------------
 
 def update_entity_snapshots(code_postal: str, scraped_at: str) -> None:
-    actives = sb.table("annonces").select(
+    # Snapshot du CP courant (pour historique_activite)
+    actives = _sb_execute(sb.table("annonces").select(
         "entite_id, sur_lbc, sur_seloger"
-    ).eq("code_postal", code_postal).eq("est_active", True).not_.is_("entite_id", "null").execute().data
+    ).eq("code_postal", code_postal).eq("est_active", True).not_.is_("entite_id", "null")).data
 
     counts: dict[str, dict] = {}
     for row in actives:
@@ -533,20 +534,35 @@ def update_entity_snapshots(code_postal: str, scraped_at: str) -> None:
         if row.get("sur_seloger"):
             counts[eid]["seloger"] += 1
 
+    if not counts:
+        return
+
+    # Total global toutes zones — une seule requête pour tous les entite_ids
+    all_actives = _sb_execute(sb.table("annonces").select(
+        "entite_id"
+    ).eq("est_active", True).not_.is_("entite_id", "null").in_(
+        "entite_id", list(counts.keys())
+    )).data
+    total_par_entite: dict[str, int] = {}
+    for row in all_actives:
+        eid = row["entite_id"]
+        total_par_entite[eid] = total_par_entite.get(eid, 0) + 1
+
     date_snap = scraped_at[:10]
     for eid, c in counts.items():
-        nb_total = c["lbc"] + c["seloger"]
-        entite = sb.table("entites").select("historique_activite, nb_annonces_actives").eq("id", eid).execute().data
+        nb_total_cp = c["lbc"] + c["seloger"]
+        entite = _sb_execute(
+            sb.table("entites").select("historique_activite").eq("id", eid)
+        ).data
         if not entite:
             continue
         hist = entite[0].get("historique_activite") or []
-        # Remplacer snapshot du même jour s'il existe
         hist = [h for h in hist if h.get("date") != date_snap]
-        hist.append({"date": date_snap, "nb_lbc": c["lbc"], "nb_seloger": c["seloger"], "nb_total": nb_total})
-        sb.table("entites").update({
-            "nb_annonces_actives": nb_total,
+        hist.append({"date": date_snap, "nb_lbc": c["lbc"], "nb_seloger": c["seloger"], "nb_total": nb_total_cp})
+        _sb_execute(sb.table("entites").update({
+            "nb_annonces_actives": total_par_entite.get(eid, nb_total_cp),
             "historique_activite": hist,
-        }).eq("id", eid).execute()
+        }).eq("id", eid))
 
 
 # ---------------------------------------------------------------------------
@@ -697,19 +713,28 @@ def cross_entity_match(code_postal: str) -> dict:
 # Main
 # ---------------------------------------------------------------------------
 
-def run_transform(code_postal: str, commune: str = "") -> None:
+def run_transform(code_postal: str, commune: str = "",
+                  pages_erreur_lbc: list[int] | None = None,
+                  pages_erreur_sl:  list[int] | None = None,
+                  lbc_total_attendu: int | None = None,
+                  sl_total_attendu:  int | None = None) -> None:
     t0 = time.time()
     scraped_at = datetime.now(timezone.utc).isoformat()
     print(f"\n=== Transform {code_postal} {commune} ===")
 
     # Créer le run avec statut 'running' — mis à jour à la fin
-    run_res = _sb_execute(sb.table("runs").insert({
+    run_payload: dict = {
         "scraped_at":  scraped_at,
         "code_postal": code_postal,
         "commune":     commune or code_postal,
         "source":      "all",
         "statut":      "running",
-    }))
+    }
+    if pages_erreur_lbc is not None: run_payload["pages_erreur_lbc"]   = pages_erreur_lbc
+    if pages_erreur_sl  is not None: run_payload["pages_erreur_sl"]    = pages_erreur_sl
+    if lbc_total_attendu is not None: run_payload["lbc_total_attendu"] = lbc_total_attendu
+    if sl_total_attendu  is not None: run_payload["sl_total_attendu"]  = sl_total_attendu
+    run_res = _sb_execute(sb.table("runs").insert(run_payload))
     run_id = run_res.data[0]["id"]
     print(f"  run_id = {run_id}")
 
