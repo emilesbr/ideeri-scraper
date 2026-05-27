@@ -41,7 +41,7 @@ def _warn(msg): print(f"  {Y}⚠️ {RST} {msg}")
 
 SB_URL     = "https://app.scrapingbee.com/api/v1/"
 SL_PARAMS  = {"render_js": "false", "premium_proxy": "true", "country_code": "fr"}
-LBC_PARAMS = {"render_js": "true",  "premium_proxy": "true", "wait": "4000", "block_resources": "true"}
+LBC_PARAMS = {"render_js": "true",  "premium_proxy": "true", "wait": "6000", "block_resources": "true"}
 DEBUG      = Path(__file__).parent / "debug"
 DEBUG.mkdir(exist_ok=True)
 
