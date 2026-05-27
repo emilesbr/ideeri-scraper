@@ -3,7 +3,7 @@ api.py — API Flask pour le dashboard Ideeri
 Usage : python3 api.py  → localhost:5000
 """
 
-import json, os, re, sys, threading
+import json, os, re, sys, threading, unicodedata
 from datetime import datetime, timezone, timedelta
 import subprocess
 from pathlib import Path
@@ -22,6 +22,12 @@ _ANSI = re.compile(r"\033\[[0-9;]*m")
 
 def _sb():
     return create_client(os.environ["SUPA_URL"], os.environ["SUPA_KEY"])
+
+
+def _norm(s: str) -> str:
+    """Normalise commune : minuscules + supprime accents pour comparaison."""
+    nfkd = unicodedata.normalize("NFKD", (s or "").lower())
+    return "".join(c for c in nfkd if not unicodedata.combining(c)).strip()
 
 
 def _strip_ansi(s: str) -> str:
@@ -68,28 +74,37 @@ def zones():
         "pages_erreur_lbc, pages_erreur_sl, lbc_total_attendu, sl_total_attendu"
     ).order("scraped_at", desc=True).limit(500).execute().data
 
-    # Grouper par (cp, commune) — deux communes peuvent partager le même CP
+    # Grouper par (cp, commune normalisée) — fusionne "Pelussin" et "Pélussin"
     zones_map: dict[tuple, dict] = {}
     for r in runs_rows:
         cp   = r.get("code_postal")
         comm = (r.get("commune") or "").strip()
         if not cp:
             continue
-        key = (cp, comm)
+        key = (cp, _norm(comm))
         if key not in zones_map:
             zones_map[key] = {"cp": cp, "commune": comm, "nb_runs": 0, "latest": None}
+        else:
+            zones_map[key]["commune"] = comm   # garder le nom du run le plus récent
         zones_map[key]["nb_runs"] += 1
         if zones_map[key]["latest"] is None:
             zones_map[key]["latest"] = r
 
+    # Pré-charger toutes les annonces actives par CP (évite N requêtes)
+    all_ann_by_cp: dict[str, list] = {}
+    for (cp, _), _ in zones_map.items():
+        if cp not in all_ann_by_cp:
+            rows_cp = sb.table("annonces").select("commune") \
+                        .eq("code_postal", cp).eq("est_active", True).execute().data
+            all_ann_by_cp[cp] = rows_cp
+
     result = []
-    for (cp, commune), v in sorted(zones_map.items()):
-        nb = sb.table("annonces").select("id_annonce", count="exact") \
-               .eq("code_postal", cp).ilike("commune", commune) \
-               .eq("est_active", True).execute().count or 0
+    for (cp, norm_comm), v in sorted(zones_map.items()):
+        nb = sum(1 for a in all_ann_by_cp.get(cp, [])
+                 if _norm(a.get("commune", "")) == norm_comm)
         result.append({
             "cp":          cp,
-            "commune":     commune,
+            "commune":     v["commune"],
             "nb_annonces": nb,
             "nb_runs":     v["nb_runs"],
             "run_status":  _run_status(v["latest"]),
@@ -121,10 +136,10 @@ def zone(cp):
     sb = _sb()
     commune_filter = (request.args.get("commune") or "").strip() or None
 
-    q = sb.table("annonces").select("*").eq("code_postal", cp).eq("est_active", True)
+    rows = sb.table("annonces").select("*").eq("code_postal", cp).eq("est_active", True).execute().data
     if commune_filter:
-        q = q.ilike("commune", commune_filter)
-    rows = q.execute().data
+        norm_cf = _norm(commune_filter)
+        rows = [r for r in rows if _norm(r.get("commune", "")) == norm_cf]
 
     if not rows:
         return jsonify({"error": "zone inconnue"}), 404
@@ -213,10 +228,12 @@ def zone(cp):
     price_changes.sort(key=lambda x: x["date"], reverse=True)
 
     # Dernier run (filtré par commune si fournie)
-    rq = sb.table("runs").select("*").eq("code_postal", cp).order("scraped_at", desc=True).limit(5)
+    all_runs = sb.table("runs").select("*").eq("code_postal", cp).order("scraped_at", desc=True).limit(50).execute().data
     if commune_filter:
-        rq = rq.ilike("commune", commune_filter)
-    runs_rows = rq.execute().data
+        norm_cf  = _norm(commune_filter)
+        runs_rows = [r for r in all_runs if _norm(r.get("commune", "")) == norm_cf][:5]
+    else:
+        runs_rows = all_runs[:5]
     last_run   = runs_rows[0]["scraped_at"][:16].replace("T", " ") if runs_rows else None
     run_status = _run_status(runs_rows[0] if runs_rows else None)
 
