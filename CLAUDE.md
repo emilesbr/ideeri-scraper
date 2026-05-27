@@ -257,11 +257,14 @@ timeout = 45  # secondes
 params = {
     "render_js":       "true",   # SPA React — nécessite rendu JS
     "premium_proxy":   "true",   # Contourne Datadome LBC (validé mai 2026)
-    "wait":            "4000",   # 4s d'attente après chargement JS
+    "wait":            "6000",   # 6s d'attente après chargement JS (4000 causait HTTP 500)
     "block_resources": "true",   # Bloquer ressources non nécessaires
 }
 timeout = 120  # secondes
 ```
+
+**Backoff automatique** : `_fetch()` réessaie jusqu'à 3 fois en cas de HTTP 500 LBC,
+en augmentant le wait de +2000ms à chaque tentative (6000 → 8000 → 10000ms).
 
 **Note** : passage de `stealth_proxy` à `premium_proxy` en mai 2026 (Rive-de-Gier 42800).
 Si LBC retourne des erreurs Datadome, revenir à `stealth_proxy` + `block_resources: false`.
@@ -278,13 +281,26 @@ Quota mensuel starter ScrapingBee : 1 000 crédits → 3–5 communes/mois selon
 
 ### Erreurs anti-bot connues
 
-- **LBC 520** : URL avec `__` (double underscore). L'ancien format
-  `/recherche?locations=<ville>_<cp>__<lat>_<lon>_<radius>` provoque ce bug.
-  Format actuel dans `pipeline.py` : `/recherche?category=9&locations=<Commune>_<cp>&real_estate_type=2`
-  (sans `__`). Fonctionne aussi : `/cl/ventes_immobilieres/cp_<ville>_<cp>/real_estate_type:2`
+- **LBC HTTP 500 sur une page** : rendu JS pas encore terminé. Le backoff automatique
+  (6000→8000→10000ms) couvre la plupart des cas. Si ça persiste, lancer `pipeline.py retry <cp>`.
 - **SeLoger 404** : l'ancien format `/achat/appartements-maisons/<slug>/` est obsolète.
   Utiliser `classified-search?locations=<code_commune_ou_cp>`.
-- **LBC HTTP 500 sur une page** : intermittent, relancer avec `wait=5000`.
+
+### URL LeBonCoin — format actuel (mai 2026)
+
+```
+https://www.leboncoin.fr/recherche/p-{N}?category=9
+  &locations={Commune}_{CP}__{lat}_{lon}_5000
+  &immo_sell_type=old
+  &owner_type=all
+  &page={N}    ← pour pages > 1
+```
+
+- Géocodage via `api-adresse.data.gouv.fr` pour obtenir lat/lon
+- Sans le `__lat_lon_radius`, LBC ignore le filtre de localisation → 882k résultats nationaux
+- `immo_sell_type=old` : ventes dans l'ancien (exclut le neuf)
+- `owner_type=all` : pros + particuliers
+- Pagination : `&page=2`, `&page=3`… (pas de `/p-N` dans le path)
 
 ---
 
@@ -483,6 +499,7 @@ python3 pipeline.py status <cp>                    # État d'une zone
 python3 pipeline.py scrape <cp> <commune>          # Scraping seul
 python3 pipeline.py transform <cp> <commune>       # Transform seul (stg_* déjà rempli)
 python3 pipeline.py run <cp> <commune>             # Scrape + transform
+python3 pipeline.py retry <cp>                     # Re-scrape les pages manquantes d'un run incomplet
 python3 pipeline.py reset <cp>                     # Réinitialise données d'une zone
 python3 pipeline.py enrich                         # Enrichit les entités avec données SIRENE
 python3 pipeline.py enrich --all                   # Ré-enrichit même les déjà traités
@@ -581,7 +598,32 @@ print(f'{n} paires intra, {cl[\"n_clusters\"]} clusters cross')
 
 ---
 
-## 9. Bugs connus et limitations
+## 9. Résilience et suivi des runs
+
+### Suivi de l'état d'un run
+
+- **Scrape** : état sauvegardé dans `debug/scrape_state_{cp}.json` après chaque scrape.
+  Contient `pages_erreur_lbc`, `pages_erreur_sl`, `lbc_base`, `sl_base`.
+  Permet `pipeline.py retry <cp>` pour re-scraper uniquement les pages manquantes.
+
+- **Transform** : `runs.statut` vaut `'running'` pendant le traitement, `'ok'` à la fin,
+  `'error'` si le transform crash. Un run `'running'` bloqué = crash détectable.
+  Relancer : `python3 pipeline.py transform <cp> <commune>` (idempotent, upsert).
+
+- **Supabase ReadTimeout** : `_sb_execute()` dans transform.py réessaie 3 fois avec
+  backoff 2s/4s avant de lever l'exception.
+
+### Détection des runs incomplets
+
+```sql
+-- Runs crashés ou incomplets
+SELECT id, code_postal, commune, scraped_at, statut, nb_annonces_trouvees
+FROM runs
+WHERE statut IN ('running', 'error')
+ORDER BY scraped_at DESC;
+```
+
+## 10. Bugs connus et limitations
 
 **`nb_annonces_actives` dans `entites` n'agrège pas les CPs** :
 Le compteur est écrasé à chaque run du transform sur un CP donné. Pour une entité présente
@@ -598,27 +640,30 @@ ses `codes_postaux` dans la table `entites`.
 **`processed` dans `stg_*`** : le flag `processed=true` n'est pas positionné après
 transform — toutes les lignes restent `processed=false`. Non bloquant mais à implémenter.
 
+**Encodage LBC** : les réponses ScrapingBee sont décodées en UTF-8 explicite (`r.content.decode('utf-8')`).
+L'ancien `r.text` utilisait l'encodage déclaré dans le Content-Type, parfois latin-1, provoquant
+des noms cassés (`Ã©` au lieu de `é`).
+
 ---
 
-## 10. Prochaines étapes
+## 11. Prochaines étapes
 
 ### Court terme
 - **Fix `nb_annonces_actives`** : agréger sur tous les CPs dans `transform.py`.
-- **GES SeLoger** : absent de la SERP. Chercher dans la page détail annonce individuelle
-  (`/annonces/achat/<ville>/<id>.htm`) ou via l'API SeLoger non documentée.
-- **Rive-de-Gier (42800)** : zone déjà en base (120 ann), intégrer dans le dashboard.
+- **Retry Rive-de-Gier 42800** : page 4 LBC manquante — `python3 pipeline.py retry 42800`.
 - **`processed=true`** dans `stg_*` après chaque transform.
+- **Dashboard retry** : afficher les runs incomplets (`scrape_state_{cp}.json`) avec bouton retry et slider wait.
 
 ### Moyen terme
+- **GES SeLoger** : absent de la SERP. Chercher dans la page détail annonce individuelle.
 - **Croisement DVF** : données DGFiP sur data.gouv.fr, join sur (type_bien, surface±10m²,
   code_postal, prix±15%). Objectif : mesurer délais et taux de vente par agence.
-- **Croisement ADEME DPE** : API `https://data.ademe.fr/datasets/dpe-v2-logements-existants`,
-  valider cohérence DPE annonce vs DPE officiel.
+- **Croisement ADEME DPE** : API `https://data.ademe.fr/datasets/dpe-v2-logements-existants`.
 - **Multi-communes** : pipeline batch avec gestion du quota ScrapingBee mensuel.
 
 ---
 
-## 11. Infra et accès
+## 12. Infra et accès
 
 ### Variables d'environnement (`.env`)
 ```

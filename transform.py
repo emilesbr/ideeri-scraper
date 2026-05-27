@@ -702,75 +702,91 @@ def run_transform(code_postal: str, commune: str = "") -> None:
     scraped_at = datetime.now(timezone.utc).isoformat()
     print(f"\n=== Transform {code_postal} {commune} ===")
 
-    # Créer le run
-    run_res = sb.table("runs").insert({
+    # Créer le run avec statut 'running' — mis à jour à la fin
+    run_res = _sb_execute(sb.table("runs").insert({
         "scraped_at":  scraped_at,
         "code_postal": code_postal,
         "commune":     commune or code_postal,
         "source":      "all",
-        "statut":      "ok",
-    }).execute()
+        "statut":      "running",
+    }))
     run_id = run_res.data[0]["id"]
     print(f"  run_id = {run_id}")
 
     stats = {"trouvees": 0, "nouvelles": 0, "disparues": 0, "prix_modifies": 0}
 
-    for source, table, parser in [
-        ("lbc",     "stg_lbc",     parse_lbc_ads),
-        ("seloger", "stg_seloger", parse_seloger_ads),
-    ]:
-        print(f"\n  [{source.upper()}]")
-        rows = sb.table(table).select("*").eq("data_brute->_meta->>code_postal", code_postal).execute().data
-        if not rows:
-            # Fallback: essayer sans filtre sur code_postal (données sans migration)
-            rows = sb.table(table).select("*").execute().data
+    try:
+        for source, table, parser in [
+            ("lbc",     "stg_lbc",     parse_lbc_ads),
+            ("seloger", "stg_seloger", parse_seloger_ads),
+        ]:
+            print(f"\n  [{source.upper()}]")
+            rows = _sb_execute(
+                sb.table(table).select("*").eq("data_brute->_meta->>code_postal", code_postal)
+            ).data
+            if not rows:
+                rows = _sb_execute(sb.table(table).select("*")).data
 
-        seen_ids: set[str] = set()
-        for row in rows:
-            raw = row.get("data_brute", {})
-            ads = parser(raw)
-            print(f"    page {raw.get('_meta',{}).get('page','?')} → {len(ads)} annonces")
+            seen_ids: set[str] = set()
+            for row in rows:
+                raw = row.get("data_brute", {})
+                ads = parser(raw)
+                print(f"    page {raw.get('_meta',{}).get('page','?')} → {len(ads)} annonces")
 
-            for ann in ads:
-                ann["_entity"]["source"] = source
-                entite_id = upsert_entity(ann["_entity"], scraped_at)
-                status = upsert_annonce(ann, entite_id, run_id, scraped_at)
-                seen_ids.add(ann["id_annonce"])
-                stats["trouvees"] += 1
-                if status == "new":
-                    stats["nouvelles"] += 1
-                elif status == "price_change":
-                    stats["prix_modifies"] += 1
+                for ann in ads:
+                    ann["_entity"]["source"] = source
+                    entite_id = upsert_entity(ann["_entity"], scraped_at)
+                    status = upsert_annonce(ann, entite_id, run_id, scraped_at)
+                    seen_ids.add(ann["id_annonce"])
+                    stats["trouvees"] += 1
+                    if status == "new":
+                        stats["nouvelles"] += 1
+                    elif status == "price_change":
+                        stats["prix_modifies"] += 1
 
-        n_disparus = mark_inactive(code_postal, source, seen_ids, scraped_at)
-        stats["disparues"] += n_disparus
-        if n_disparus:
-            print(f"    {n_disparus} annonces marquées inactives")
+            n_disparus = mark_inactive(code_postal, source, seen_ids, scraped_at)
+            stats["disparues"] += n_disparus
+            if n_disparus:
+                print(f"    {n_disparus} annonces marquées inactives")
 
-    n_intra = intra_entity_match(code_postal)
-    if n_intra:
-        print(f"\n  {n_intra} paires intra-entité matchées (LBC↔SeLoger, seuil 0.70)")
+        n_intra = intra_entity_match(code_postal)
+        if n_intra:
+            print(f"\n  {n_intra} paires intra-entité matchées (LBC↔SeLoger, seuil 0.70)")
 
-    cl = cross_entity_match(code_postal)
-    if cl["n_annonces"]:
-        print(f"  {cl['n_clusters']} clusters multi-entités ({cl['n_annonces']} annonces, seuil 0.80)")
+        cl = cross_entity_match(code_postal)
+        if cl["n_annonces"]:
+            print(f"  {cl['n_clusters']} clusters multi-entités ({cl['n_annonces']} annonces, seuil 0.80)")
 
-    update_entity_snapshots(code_postal, scraped_at)
+        update_entity_snapshots(code_postal, scraped_at)
 
-    duree = int(time.time() - t0)
-    sb.table("runs").update({
-        "nb_annonces_trouvees": stats["trouvees"],
-        "nb_nouvelles":         stats["nouvelles"],
-        "nb_disparues":         stats["disparues"],
-        "nb_prix_modifies":     stats["prix_modifies"],
-        "duree_secondes":       duree,
-    }).eq("id", run_id).execute()
+        duree = int(time.time() - t0)
+        _sb_execute(sb.table("runs").update({
+            "nb_annonces_trouvees": stats["trouvees"],
+            "nb_nouvelles":         stats["nouvelles"],
+            "nb_disparues":         stats["disparues"],
+            "nb_prix_modifies":     stats["prix_modifies"],
+            "duree_secondes":       duree,
+            "statut":               "ok",
+        }).eq("id", run_id))
 
-    print(f"\n  Résultat run #{run_id} ({duree}s) :")
-    print(f"    trouvées     : {stats['trouvees']}")
-    print(f"    nouvelles    : {stats['nouvelles']}")
-    print(f"    disparues    : {stats['disparues']}")
-    print(f"    prix modifiés: {stats['prix_modifies']}")
+        print(f"\n  Résultat run #{run_id} ({duree}s) :")
+        print(f"    trouvées     : {stats['trouvees']}")
+        print(f"    nouvelles    : {stats['nouvelles']}")
+        print(f"    disparues    : {stats['disparues']}")
+        print(f"    prix modifiés: {stats['prix_modifies']}")
+
+    except Exception as e:
+        duree = int(time.time() - t0)
+        try:
+            sb.table("runs").update({
+                "statut": "error", "duree_secondes": duree,
+                "nb_annonces_trouvees": stats["trouvees"],
+            }).eq("id", run_id).execute()
+        except Exception:
+            pass
+        print(f"\n  ❌ Transform run #{run_id} interrompu après {duree}s : {e}")
+        print(f"  Relance : python3 pipeline.py transform {code_postal} {commune}")
+        raise
 
 
 if __name__ == "__main__":
