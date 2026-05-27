@@ -133,6 +133,7 @@ def _lbc_base(commune: str, cp: str) -> str:
             "https://www.leboncoin.fr/recherche"
             "?category=9"
             f"&locations={slug}_{cp}__{lat}_{lon}_5000"
+            "&immo_sell_type=old"
             "&owner_type=all"
         )
     # Fallback sans géocodage — appartements uniquement
@@ -143,6 +144,14 @@ def _lbc_base(commune: str, cp: str) -> str:
         f"&locations={slug}_{cp}"
         "&real_estate_type=2"
     )
+
+
+def _lbc_page(base_url: str, page: int) -> str:
+    """Insère /p-N dans le path LBC avant la query string."""
+    if "?" in base_url:
+        path, qs = base_url.split("?", 1)
+        return f"{path}/p-{page}?{qs}"
+    return f"{base_url}/p-{page}"
 
 
 def _sl_base(code: str) -> str:
@@ -369,7 +378,7 @@ def cmd_scrape(cp: str, commune: str, sl_code: str | None = None,
     r_lbc = {"status": None, "html": ""}
     if do_lbc:
         print(f"  LBC p1...", end=" ", flush=True)
-        r_lbc = _fetch(f"lbc_{cp}_p1", f"{lbc_base}/p-1", LBC_PARAMS, timeout=120)
+        r_lbc = _fetch(f"lbc_{cp}_p1", _lbc_page(lbc_base, 1), LBC_PARAMS, timeout=120)
         lbc_ads, lbc_raw, lbc_total = _parse_lbc(r_lbc["html"]) if r_lbc["status"] == 200 else ([], {}, 0)
         lbc_pages = max(1, math.ceil(lbc_total / 35)) if lbc_total else 0
         print(f"{'OK — ' + str(lbc_total) + ' ann. → ' + str(lbc_pages) + ' pages' if r_lbc['status'] == 200 else 'ECHEC HTTP ' + str(r_lbc['status'])}")
@@ -413,7 +422,7 @@ def cmd_scrape(cp: str, commune: str, sl_code: str | None = None,
     if do_sl  and r_sl["status"]  == 200:
         _insert_stg("stg_seloger", commune, cp, 1, sl_base,          sl_raw,  len(sl_ids),  sb)
     if do_lbc and r_lbc["status"] == 200:
-        _insert_stg("stg_lbc",     commune, cp, 1, f"{lbc_base}/p-1", lbc_raw, len(lbc_ads), sb)
+        _insert_stg("stg_lbc",     commune, cp, 1, _lbc_page(lbc_base, 1), lbc_raw, len(lbc_ads), sb)
 
     # Construire les tâches pages 2..N
     tasks = []
@@ -422,7 +431,7 @@ def cmd_scrape(cp: str, commune: str, sl_code: str | None = None,
             tasks.append(("seloger", p, f"{sl_base}&page={p}",   SL_PARAMS,  45))
     if do_lbc:
         for p in range(2, lbc_pages + 1):
-            tasks.append(("lbc",     p, f"{lbc_base}/p-{p}",     LBC_PARAMS, 120))
+            tasks.append(("lbc",     p, _lbc_page(lbc_base, p),  LBC_PARAMS, 120))
 
     total_sl  = len(sl_ids)
     total_lbc = len(lbc_ads)
