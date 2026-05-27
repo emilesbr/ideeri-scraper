@@ -138,6 +138,25 @@ tr:hover td { background: #fafbfc; cursor: pointer; }
 .dot-error   { background: #fc8181; }
 .dot-never   { background: #4a5568; }
 .ent-activity { font-size: 11px; color: #a0aec0; margin-top: 5px; }
+.mini-bar { position: fixed; bottom: 0; right: 24px; width: 290px; background: #1e2a3a;
+            border-radius: 8px 8px 0 0; box-shadow: 0 -4px 24px rgba(0,0,0,.4);
+            z-index: 300; cursor: pointer; user-select: none; }
+.mini-bar-head { padding: 10px 14px; display: flex; align-items: center; justify-content: space-between; }
+.mini-bar-info .mini-bar-title { color: #e2e8f0; font-size: 12px; font-weight: 600; }
+.mini-bar-info .mini-bar-status { font-size: 11px; color: #718096; margin-top: 2px; }
+.mini-bar-btns { display: flex; gap: 2px; flex-shrink: 0; }
+.mini-btn { background: none; border: none; color: #718096; cursor: pointer;
+            font-size: 20px; line-height: 1; padding: 0 4px; }
+.mini-btn:hover { color: #e2e8f0; }
+.m-minimize { background: none; border: none; cursor: pointer; font-size: 22px;
+              color: #a0aec0; line-height: 1; padding: 0 6px; }
+.m-minimize:hover { color: #4a5568; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.25} }
+.mini-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+            margin-right: 5px; vertical-align: middle; }
+.mini-dot.running { background: #ed8936; animation: pulse 1.4s ease-in-out infinite; }
+.mini-dot.done    { background: #48bb78; }
+.mini-dot.error   { background: #fc8181; }
 </style>
 </head>
 <body>
@@ -161,7 +180,10 @@ tr:hover td { background: #fafbfc; cursor: pointer; }
   <div class="modal">
     <div class="m-head">
       <span class="m-title">Lancer un run</span>
-      <button class="m-close" onclick="closeRunModal()">×</button>
+      <div style="display:flex;align-items:center;gap:2px">
+        <button class="m-minimize" id="run-minimize-btn" onclick="minimizeModal('run')" title="Réduire" style="display:none">─</button>
+        <button class="m-close" onclick="closeRunModal()">×</button>
+      </div>
     </div>
     <div class="m-body">
       <div id="run-form">
@@ -192,7 +214,10 @@ tr:hover td { background: #fafbfc; cursor: pointer; }
   <div class="modal">
     <div class="m-head">
       <span class="m-title" id="retry-title">Retry pages manquantes</span>
-      <button class="m-close" onclick="closeRetryModal()">×</button>
+      <div style="display:flex;align-items:center;gap:2px">
+        <button class="m-minimize" id="retry-minimize-btn" onclick="minimizeModal('retry')" title="Réduire" style="display:none">─</button>
+        <button class="m-close" onclick="closeRetryModal()">×</button>
+      </div>
     </div>
     <div class="m-body">
       <div id="retry-form">
@@ -212,6 +237,19 @@ tr:hover td { background: #fafbfc; cursor: pointer; }
   </div>
 </div>
 
+<div id="mini-bar" class="mini-bar" style="display:none" onclick="restoreFromMini()">
+  <div class="mini-bar-head">
+    <div class="mini-bar-info">
+      <div class="mini-bar-title" id="mini-title">En cours…</div>
+      <div class="mini-bar-status" id="mini-status"><span class="mini-dot running" id="mini-dot"></span>En cours</div>
+    </div>
+    <div class="mini-bar-btns">
+      <button class="mini-btn" onclick="event.stopPropagation();restoreFromMini()" title="Agrandir">⬜</button>
+      <button class="mini-btn" onclick="event.stopPropagation();closeMini()" title="Fermer">×</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const API = 'http://localhost:5000/api';
 let currentCp = '';
@@ -222,6 +260,43 @@ let zoneData = null;
 
 let retryCurrentCp = '';
 let retryCurrentCommune = '';
+
+// ── Mini-bar (modal réduit) ──────────────────────────────────────────────────
+let _miniTarget = null;
+
+function minimizeModal(target) {
+  _miniTarget = target;
+  const overlayId = target === 'run' ? 'run-overlay' : 'retry-overlay';
+  document.getElementById(overlayId).classList.remove('open');
+  const title = target === 'run'
+    ? `Run — ${(document.getElementById('r-commune').value||'').trim() || '…'} ${(document.getElementById('r-cp').value||'').trim()}`
+    : `Retry — ${retryCurrentCommune} ${retryCurrentCp}`;
+  document.getElementById('mini-title').textContent  = title;
+  document.getElementById('mini-status').innerHTML   = '<span class="mini-dot running" id="mini-dot"></span>En cours…';
+  document.getElementById('mini-bar').style.display  = 'block';
+}
+
+function restoreFromMini() {
+  if (!_miniTarget) return;
+  const overlayId = _miniTarget === 'run' ? 'run-overlay' : 'retry-overlay';
+  document.getElementById(overlayId).classList.add('open');
+  document.getElementById('mini-bar').style.display = 'none';
+}
+
+function closeMini() {
+  document.getElementById('mini-bar').style.display = 'none';
+  _miniTarget = null;
+}
+
+function _miniDone(ok) {
+  const dot = document.getElementById('mini-dot');
+  if (dot) { dot.className = `mini-dot ${ok ? 'done' : 'error'}`; }
+  const txt = document.getElementById('mini-status');
+  if (txt) {
+    const label = ok ? '✓ Terminé — cliquer pour voir' : '✗ Erreur';
+    txt.innerHTML = `<span class="mini-dot ${ok?'done':'error'}"></span>${label}`;
+  }
+}
 
 // ── Run status ──────────────────────────────────────────────────────────────
 function _runStatusHtml(rs) {
@@ -280,7 +355,10 @@ function openRetryModal(cp, commune, alert) {
   document.getElementById('retry-overlay').classList.add('open');
 }
 
-function closeRetryModal() { document.getElementById('retry-overlay').classList.remove('open'); }
+function closeRetryModal() {
+  document.getElementById('retry-overlay').classList.remove('open');
+  document.getElementById('retry-minimize-btn').style.display = 'none';
+}
 
 function updateWaitLabel() {
   const v = document.getElementById('retry-wait').value;
@@ -291,6 +369,7 @@ async function startRetry() {
   const wait = document.getElementById('retry-wait').value;
   document.getElementById('retry-form').style.display = 'none';
   document.getElementById('retry-log').style.display  = 'block';
+  document.getElementById('retry-minimize-btn').style.display = 'inline';
   const btn = document.getElementById('retry-action-btn');
   btn.textContent = 'En cours…'; btn.disabled = true;
 
@@ -317,8 +396,9 @@ async function startRetry() {
         const payload = JSON.parse(line.slice(6));
         if (payload === '__DONE__') {
           add('✓ Retry terminé');
+          _miniDone(true);
           btn.textContent = 'Voir les résultats'; btn.disabled = false;
-          btn.onclick = () => { closeRetryModal(); selectZone(retryCurrentCp, retryCurrentCommune); loadZones(); loadAlerts(); };
+          btn.onclick = () => { closeMini(); closeRetryModal(); selectZone(retryCurrentCp, retryCurrentCommune); loadZones(); loadAlerts(); };
           return;
         }
         add(payload);
@@ -326,6 +406,7 @@ async function startRetry() {
     }
   } catch(e) {
     add('✗ Erreur connexion API : ' + e.message);
+    _miniDone(false);
     btn.textContent = 'Fermer'; btn.disabled = false; btn.onclick = closeRetryModal;
   }
 }
@@ -595,7 +676,10 @@ function openRunModal(cp, commune) {
   btn.textContent='▶ Lancer'; btn.disabled=false; btn.onclick=startRun;
   document.getElementById('run-overlay').classList.add('open');
 }
-function closeRunModal() { document.getElementById('run-overlay').classList.remove('open'); }
+function closeRunModal() {
+  document.getElementById('run-overlay').classList.remove('open');
+  document.getElementById('run-minimize-btn').style.display = 'none';
+}
 
 async function startRun() {
   const cp      = document.getElementById('r-cp').value.trim();
@@ -606,6 +690,7 @@ async function startRun() {
 
   document.getElementById('run-form').style.display = 'none';
   document.getElementById('run-log').style.display  = 'block';
+  document.getElementById('run-minimize-btn').style.display = 'inline';
   const btn = document.getElementById('run-action-btn');
   btn.textContent='En cours…'; btn.disabled=true;
 
@@ -636,8 +721,9 @@ async function startRun() {
         const payload=JSON.parse(line.slice(6));
         if (payload==='__DONE__') {
           add('✓ Pipeline terminé');
+          _miniDone(true);
           btn.textContent='Voir les résultats'; btn.disabled=false;
-          btn.onclick=()=>{ closeRunModal(); selectZone(cp,commune); loadZones(); };
+          btn.onclick=()=>{ closeMini(); closeRunModal(); selectZone(cp,commune); loadZones(); };
           return;
         }
         add(payload);
@@ -646,6 +732,7 @@ async function startRun() {
   } catch(e) {
     add('✗ Erreur connexion API : '+e.message);
     add('  Vérifiez que python3 api.py est lancé.');
+    _miniDone(false);
     btn.textContent='Fermer'; btn.disabled=false; btn.onclick=closeRunModal;
   }
 }
