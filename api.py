@@ -423,10 +423,10 @@ def run_pipeline():
             cwd=str(HERE),
         )
 
-        # Répond "o" aux deux confirmations interactives de pipeline.py
+        # Répond "o" à toutes les confirmations interactives de pipeline.py
         def _feed_stdin():
             try:
-                proc.stdin.write("o\no\n")
+                proc.stdin.write("o\no\no\no\n")
                 proc.stdin.flush()
                 proc.stdin.close()
             except Exception:
