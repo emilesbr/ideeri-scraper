@@ -350,6 +350,22 @@ def cmd_status(cp: str):
 # scrape
 # ---------------------------------------------------------------------------
 
+def _save_scrape_state(cp: str, commune: str, lbc_base: str | None, sl_base: str | None,
+                       lbc_pages: int, sl_pages: int,
+                       err_lbc: list[int], err_sl: list[int]) -> None:
+    state = {
+        "commune": commune, "cp": cp,
+        "lbc_base": lbc_base, "sl_base": sl_base,
+        "lbc_pages": lbc_pages, "sl_pages": sl_pages,
+        "pages_erreur_lbc": sorted(err_lbc),
+        "pages_erreur_sl":  sorted(err_sl),
+        "scraped_at": datetime.now(timezone.utc).isoformat(),
+    }
+    (DEBUG / f"scrape_state_{cp}.json").write_text(
+        json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+
 def cmd_scrape(cp: str, commune: str, sl_code: str | None = None,
                source: str | None = None) -> dict | None:
     do_sl  = source in (None, "seloger")
@@ -417,9 +433,13 @@ def cmd_scrape(cp: str, commune: str, sl_code: str | None = None,
         print("  Annulé.")
         return None
 
+    # Tracking pages en erreur
+    err_lbc: list[int] = [] if r_lbc["status"] == 200 else ([1] if do_lbc else [])
+    err_sl:  list[int] = [] if r_sl["status"]  == 200 else ([1] if do_sl  else [])
+
     # Insérer page 1 (déjà fetchée)
     if do_sl  and r_sl["status"]  == 200:
-        _insert_stg("stg_seloger", commune, cp, 1, sl_base,          sl_raw,  len(sl_ids),  sb)
+        _insert_stg("stg_seloger", commune, cp, 1, sl_base,               sl_raw,  len(sl_ids),  sb)
     if do_lbc and r_lbc["status"] == 200:
         _insert_stg("stg_lbc",     commune, cp, 1, _lbc_page(lbc_base, 1), lbc_raw, len(lbc_ads), sb)
 
@@ -455,6 +475,7 @@ def cmd_scrape(cp: str, commune: str, sl_code: str | None = None,
         for src, p, url, _, _ in tasks:
             r = results.get((src, p), {})
             if r.get("status") != 200:
+                (err_lbc if src == "lbc" else err_sl).append(p)
                 continue
             if src == "seloger":
                 ids, raw, _ = _parse_seloger(r["html"])
@@ -467,17 +488,125 @@ def cmd_scrape(cp: str, commune: str, sl_code: str | None = None,
                 total_lbc += len(ads)
                 ok_lbc    += 1
 
+    # Sauvegarder l'état pour permettre un retry ciblé
+    _save_scrape_state(cp, commune,
+                       lbc_base if do_lbc else None,
+                       sl_base  if do_sl  else None,
+                       lbc_pages, sl_pages, err_lbc, err_sl)
+
     print(f"\n  {B}Résultat scraping :{RST}")
     if do_lbc:
-        print(f"  LBC     : {total_lbc} ann. sur {lbc_pages} pages ({ok_lbc} OK / {lbc_pages - ok_lbc} ERR)")
+        err_str = f"  {Y}⚠️  pages LBC en erreur : {err_lbc}{RST}" if err_lbc else ""
+        print(f"  LBC     : {total_lbc} ann. sur {lbc_pages} pages ({ok_lbc} OK / {lbc_pages - ok_lbc} ERR){err_str}")
     if do_sl:
-        print(f"  SeLoger : {total_sl} ann. sur {sl_pages} pages ({ok_sl} OK / {sl_pages - ok_sl} ERR)")
+        err_str = f"  {Y}⚠️  pages SeLoger en erreur : {err_sl}{RST}" if err_sl else ""
+        print(f"  SeLoger : {total_sl} ann. sur {sl_pages} pages ({ok_sl} OK / {sl_pages - ok_sl} ERR){err_str}")
     print(f"  Crédits consommés : ~{credits_sl + credits_lbc}")
-    print(f"\n  → Lance transform : {C}python3 pipeline.py transform {cp} {commune}{RST}")
+
+    has_errors = bool(err_lbc or err_sl)
+    if has_errors:
+        print(f"\n  {Y}Run incomplet — pour compléter les pages manquantes :{RST}")
+        print(f"    {C}python3 pipeline.py retry {cp}{RST}")
+    else:
+        print(f"\n  → Lance transform : {C}python3 pipeline.py transform {cp} {commune}{RST}")
 
     return {"total_sl": total_sl, "total_lbc": total_lbc,
             "sl_pages": sl_pages, "lbc_pages": lbc_pages,
-            "credits": credits_sl + credits_lbc}
+            "credits": credits_sl + credits_lbc,
+            "err_lbc": err_lbc, "err_sl": err_sl}
+
+
+# ---------------------------------------------------------------------------
+# retry
+# ---------------------------------------------------------------------------
+
+def cmd_retry(cp: str):
+    state_file = DEBUG / f"scrape_state_{cp}.json"
+    if not state_file.exists():
+        _err(f"Pas d'état de scrape trouvé pour {cp}")
+        print(f"  Lance d'abord : {C}python3 pipeline.py run <cp> <commune>{RST}")
+        return
+
+    state    = json.loads(state_file.read_text(encoding="utf-8"))
+    commune  = state["commune"]
+    err_lbc  = state.get("pages_erreur_lbc", [])
+    err_sl   = state.get("pages_erreur_sl",  [])
+    lbc_base = state.get("lbc_base")
+    sl_base  = state.get("sl_base")
+
+    if not err_lbc and not err_sl:
+        _ok(f"Run {cp} ({commune}) complet — aucune page manquante")
+        return
+
+    print(f"\n{B}=== Retry {commune} ({cp}) ==={RST}\n")
+    if err_lbc: print(f"  {Y}Pages LBC manquantes   : {err_lbc}{RST}")
+    if err_sl:  print(f"  {Y}Pages SeLoger manquantes: {err_sl}{RST}")
+    print()
+
+    tasks = []
+    if lbc_base:
+        for p in err_lbc:
+            tasks.append(("lbc",     p, _lbc_page(lbc_base, p),      LBC_PARAMS, 120))
+    if sl_base:
+        for p in err_sl:
+            url = sl_base if p == 1 else f"{sl_base}&page={p}"
+            tasks.append(("seloger", p, url,                          SL_PARAMS,  45))
+
+    rep = input(f"  Re-scraper {len(tasks)} page(s) manquante(s) ? [o/n] : ").strip().lower()
+    if rep != "o":
+        print("  Annulé.")
+        return
+
+    sb = _sb()
+    still_err_lbc = list(err_lbc)
+    still_err_sl  = list(err_sl)
+
+    print(f"\n  Scraping {len(tasks)} page(s)...\n")
+    with ThreadPoolExecutor(max_workers=5) as ex:
+        fmap = {
+            ex.submit(_fetch, f"{src}_{cp}_p{p}_retry", url, params, to): (src, p, url)
+            for src, p, url, params, to in tasks
+        }
+        for fut in as_completed(fmap):
+            src, p, url = fmap[fut]
+            r = fut.result()
+            icon = f"{G}✓{RST}" if r["status"] == 200 else f"{R}✗{RST}"
+            print(f"  {icon} {src:8s} p{p} | HTTP {r['status'] or 'ERR'} | {r['elapsed']}s")
+
+            if r.get("status") != 200:
+                continue
+
+            if src == "lbc":
+                ads, raw, _ = _parse_lbc(r["html"])
+                _insert_stg("stg_lbc",     commune, cp, p, url, raw, len(ads), sb)
+                still_err_lbc = [x for x in still_err_lbc if x != p]
+            else:
+                ids, raw, _ = _parse_seloger(r["html"])
+                _insert_stg("stg_seloger", commune, cp, p, url, raw, len(ids), sb)
+                still_err_sl = [x for x in still_err_sl if x != p]
+
+    # Mettre à jour l'état
+    state["pages_erreur_lbc"] = still_err_lbc
+    state["pages_erreur_sl"]  = still_err_sl
+    state_file.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    if still_err_lbc or still_err_sl:
+        _warn(f"Pages encore en erreur — LBC: {still_err_lbc} | SeLoger: {still_err_sl}")
+        _warn(f"Relance : python3 pipeline.py retry {cp}")
+    else:
+        _ok("Toutes les pages récupérées")
+
+    print()
+    cmd_transform(cp, commune)
+
+    print(f"\n  Enrichissement SIRENE des nouvelles entités...")
+    try:
+        from enrich_sirene import enrich
+        n = enrich(quiet=True)
+        if n:
+            _ok(f"{n} nouvelles entités enrichies via SIRENE")
+    except Exception as e:
+        _warn(f"Enrichissement SIRENE non bloquant : {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -510,6 +639,17 @@ def cmd_run(cp: str, commune: str, sl_code: str | None = None,
     result = cmd_scrape(cp, commune, sl_code, source)
     if result is None:
         return
+
+    err_lbc = result.get("err_lbc", [])
+    err_sl  = result.get("err_sl",  [])
+
+    if err_lbc or err_sl:
+        _warn(f"Run incomplet — pages LBC: {err_lbc} | SeLoger: {err_sl}")
+        rep = input("  Lancer le transform quand même (données partielles) ? [o/n] : ").strip().lower()
+        if rep != "o":
+            print(f"  Transform annulé. Complète d'abord : {C}python3 pipeline.py retry {cp}{RST}")
+            return
+
     print()
     cmd_transform(cp, commune)
 
@@ -523,6 +663,9 @@ def cmd_run(cp: str, commune: str, sl_code: str | None = None,
             print(f"  Aucune nouvelle entité à enrichir")
     except Exception as e:
         _warn(f"Enrichissement SIRENE non bloquant : {e}")
+
+    if err_lbc or err_sl:
+        _warn(f"Run partiel terminé. Pour compléter : {C}python3 pipeline.py retry {cp}{RST}")
 
     print(f"\n  {B}Durée totale : {int(time.time() - t0)}s{RST}")
 
@@ -609,6 +752,9 @@ def main():
     p.add_argument("--source", choices=["seloger", "lbc"], default=None,
                    help="Scraper une seule source (par défaut : les deux)")
 
+    p = sub.add_parser("retry", help="Re-scrape les pages manquantes d'un run incomplet")
+    p.add_argument("cp")
+
     p = sub.add_parser("reset", help="Réinitialise le matching d'un code postal")
     p.add_argument("cp")
 
@@ -624,6 +770,7 @@ def main():
         "scrape":    lambda: cmd_scrape(args.cp, args.commune, getattr(args, "sl_code", None), getattr(args, "source", None)),
         "transform": lambda: cmd_transform(args.cp, args.commune),
         "run":       lambda: cmd_run(args.cp, args.commune, getattr(args, "sl_code", None), getattr(args, "source", None)),
+        "retry":     lambda: cmd_retry(args.cp),
         "reset":     lambda: cmd_reset(args.cp),
         "enrich":    lambda: cmd_enrich(getattr(args, "all", False), getattr(args, "dry_run", False)),
     }[args.cmd]()
