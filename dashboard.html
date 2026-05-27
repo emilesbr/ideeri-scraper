@@ -128,6 +128,16 @@ tr:hover td { background: #fafbfc; cursor: pointer; }
                     letter-spacing: .08em; color: #e53e3e; }
 .wait-slider { width: 100%; accent-color: #3182ce; }
 .wait-labels { display: flex; justify-content: space-between; font-size: 11px; color: #718096; margin-top: 4px; }
+.zrun { font-size: 10px; margin-top: 3px; display: flex; align-items: center; gap: 5px; }
+.zrun-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.zrun-text { color: #4a5568; }
+.zone-item.active .zrun-text { color: #5a9fd4; }
+.dot-fresh   { background: #48bb78; }
+.dot-stale   { background: #718096; }
+.dot-partial { background: #ed8936; }
+.dot-error   { background: #fc8181; }
+.dot-never   { background: #4a5568; }
+.ent-activity { font-size: 11px; color: #a0aec0; margin-top: 5px; }
 </style>
 </head>
 <body>
@@ -212,6 +222,20 @@ let zoneData = null;
 
 let retryCurrentCp = '';
 let retryCurrentCommune = '';
+
+// ── Run status ──────────────────────────────────────────────────────────────
+function _runStatusHtml(rs) {
+  if (!rs || rs.status === 'never')
+    return `<div class="zrun"><span class="zrun-dot dot-never"></span><span class="zrun-text">jamais scrapé</span></div>`;
+  const dot  = `dot-${rs.status}`;
+  const date = rs.date ? new Date(rs.date+'T12:00:00').toLocaleDateString('fr-FR',{day:'numeric',month:'short'}) : '—';
+  const lbc  = rs.lbc_pages > 0
+    ? (rs.err_lbc?.length ? `LBC ⚠${rs.err_lbc.length}err` : `LBC ✓${rs.lbc_pages}p`) : '';
+  const sl   = rs.sl_pages > 0
+    ? (rs.err_sl?.length  ? `SL ⚠${rs.err_sl.length}err`   : `SL ✓${rs.sl_pages}p`)   : '';
+  const parts = [date, lbc, sl].filter(Boolean).join(' · ');
+  return `<div class="zrun"><span class="zrun-dot ${dot}"></span><span class="zrun-text">${parts}</span></div>`;
+}
 
 // ── Alertes runs incomplets ───────────────────────────────────────────────────
 async function loadAlerts() {
@@ -320,6 +344,7 @@ async function loadZones() {
         <div class="cp">${z.cp}</div>
         <div class="zname">${z.commune}</div>
         <div class="zmeta">${z.nb_annonces} ann. · ${z.nb_runs} run${z.nb_runs>1?'s':''}</div>
+        ${_runStatusHtml(z.run_status)}
       </div>`).join('');
   } catch(e) {
     document.getElementById('zones-list').innerHTML = `
@@ -366,11 +391,18 @@ function renderZone() {
   const thS = (col, lbl) =>
     `<th onclick="setSort('${col}')" style="cursor:pointer">${lbl} ${sortCol===col?(sortAsc?'↑':'↓'):''}</th>`;
 
+  const rs = z.run_status || {};
+  const rsLbc = rs.lbc_pages > 0
+    ? (rs.err_lbc?.length ? `<span style="color:#ed8936">LBC ⚠${rs.err_lbc.length}err</span>` : `<span style="color:#718096">LBC ✓${rs.lbc_pages}p</span>`) : '';
+  const rsSl  = rs.sl_pages > 0
+    ? (rs.err_sl?.length  ? `<span style="color:#ed8936">SL ⚠${rs.err_sl.length}err</span>`   : `<span style="color:#718096">SL ✓${rs.sl_pages}p</span>`)   : '';
+  const rsExtra = [rsLbc, rsSl].filter(Boolean).join(' · ');
+
   document.getElementById('main').innerHTML = `
     <div class="page-head">
       <div>
         <div class="page-title">${z.commune} <span style="font-weight:400;font-size:16px;color:#718096">${z.cp}</span></div>
-        <div class="page-sub">Dernier run : ${z.last_run||'—'} · ${z.nb_annonces||0} annonces actives</div>
+        <div class="page-sub">Dernier run : ${z.last_run||'—'}${rsExtra?' · '+rsExtra:''} · ${z.nb_annonces||0} annonces actives</div>
       </div>
       <button class="btn btn-primary" onclick="openRunModal('${z.cp}','${esc(z.commune)}')">▶ Relancer</button>
     </div>
@@ -464,6 +496,19 @@ async function showEntite(encodedNom) {
       :e.sur_lbc?'<span class="badge b-lbc">LBC</span>'
       :'<span class="badge b-sl">SeLoger</span>';
 
+    const act = e.activite || {};
+    const fmtDate = (iso, opts) => iso ? new Date(iso).toLocaleDateString('fr-FR', opts) : null;
+    const premiere = fmtDate(act.date_premiere_obs, {day:'numeric',month:'short',year:'numeric'});
+    const derniere = fmtDate(act.date_derniere_obs, {day:'numeric',month:'short'});
+    const trendTxt = act.trend_30j != null
+      ? (act.trend_30j > 0 ? `↑ +${act.trend_30j}` : act.trend_30j < 0 ? `↓ ${act.trend_30j}` : '= stable') + ' biens 30j'
+      : null;
+    const actLine = [
+      premiere ? `Obs. depuis ${premiere}` : null,
+      derniere  ? `Vu le ${derniere}` : null,
+      trendTxt,
+    ].filter(Boolean).join(' · ');
+
     document.getElementById('main').innerHTML = `
       <div class="page-head">
         <div>
@@ -478,6 +523,7 @@ async function showEntite(encodedNom) {
                 <span style="color:#a0aec0">·</span><span>${e.type||'agence'}</span>
                 ${e.siren?`<span style="color:#a0aec0">·</span><span style="font-family:monospace;font-size:11px;color:#718096">SIREN ${e.siren}</span>`:''}
               </div>
+              ${actLine?`<div class="ent-activity">${actLine}</div>`:''}
             </div>
           </div>
         </div>

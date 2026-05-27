@@ -4,6 +4,7 @@ Usage : python3 api.py  → localhost:5000
 """
 
 import json, os, re, sys, threading
+from datetime import datetime, timezone, timedelta
 import subprocess
 from pathlib import Path
 from dotenv import load_dotenv
@@ -27,6 +28,34 @@ def _strip_ansi(s: str) -> str:
     return _ANSI.sub("", s)
 
 
+def _run_status(run: dict | None) -> dict:
+    if not run:
+        return {"status": "never", "date": None, "lbc_pages": 0, "sl_pages": 0,
+                "err_lbc": [], "err_sl": [], "age_days": None}
+    err_lbc   = run.get("pages_erreur_lbc") or []
+    err_sl    = run.get("pages_erreur_sl")  or []
+    lbc_pages = run.get("lbc_total_attendu") or 0
+    sl_pages  = run.get("sl_total_attendu")  or 0
+    statut    = run.get("statut", "ok")
+    date_str  = run.get("scraped_at", "")
+    try:
+        dt       = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+        age_days = (datetime.now(timezone.utc) - dt).days
+    except Exception:
+        age_days = 999
+    if statut in ("error", "running"):
+        status = "error"
+    elif err_lbc or err_sl:
+        status = "partial"
+    elif age_days > 7:
+        status = "stale"
+    else:
+        status = "fresh"
+    return {"status": status, "date": date_str[:10] if date_str else None,
+            "lbc_pages": lbc_pages, "sl_pages": sl_pages,
+            "err_lbc": err_lbc, "err_sl": err_sl, "age_days": age_days}
+
+
 # ---------------------------------------------------------------------------
 # GET /api/zones
 # ---------------------------------------------------------------------------
@@ -34,17 +63,23 @@ def _strip_ansi(s: str) -> str:
 @app.route("/api/zones")
 def zones():
     sb = _sb()
-    runs_rows = sb.table("runs").select("code_postal, commune").execute().data
+    runs_rows = sb.table("runs").select(
+        "code_postal, commune, scraped_at, statut, "
+        "pages_erreur_lbc, pages_erreur_sl, lbc_total_attendu, sl_total_attendu"
+    ).order("scraped_at", desc=True).limit(500).execute().data
 
-    # CP → commune + nb_runs
+    # CP → commune + nb_runs + dernier run
     cp_commune: dict[str, str] = {}
     cp_runs:    dict[str, int] = {}
+    cp_latest:  dict[str, dict] = {}
     for r in runs_rows:
         cp = r.get("code_postal")
         if not cp:
             continue
         cp_commune.setdefault(cp, r.get("commune") or cp)
         cp_runs[cp] = cp_runs.get(cp, 0) + 1
+        if cp not in cp_latest:
+            cp_latest[cp] = r
 
     result = []
     for cp, commune in sorted(cp_commune.items()):
@@ -55,6 +90,7 @@ def zones():
             "commune":    commune,
             "nb_annonces": nb,
             "nb_runs":    cp_runs.get(cp, 0),
+            "run_status": _run_status(cp_latest.get(cp)),
         })
     return jsonify(result)
 
@@ -173,13 +209,15 @@ def zone(cp):
     # Dernier run
     runs_rows = sb.table("runs").select("*").eq("code_postal", cp) \
                   .order("scraped_at", desc=True).limit(5).execute().data
-    last_run = runs_rows[0]["scraped_at"][:16].replace("T", " ") if runs_rows else None
+    last_run   = runs_rows[0]["scraped_at"][:16].replace("T", " ") if runs_rows else None
+    run_status = _run_status(runs_rows[0] if runs_rows else None)
 
     return jsonify({
         # ── Identité ──
-        "cp":      cp,
-        "commune": rows[0].get("commune") or cp,
-        "last_run": last_run,
+        "cp":         cp,
+        "commune":    rows[0].get("commune") or cp,
+        "last_run":   last_run,
+        "run_status": run_status,
 
         # ── Métriques globales (noms attendus par le dashboard) ──
         "nb_annonces":      nb_annonces,
@@ -256,6 +294,21 @@ def entite(nom):
     ent_rows = sb.table("entites").select("*").eq("nom_commercial", nom).execute().data
     ent_data = ent_rows[0] if ent_rows else {}
 
+    historique   = ent_data.get("historique_activite") or []
+    hist_sorted  = sorted(historique, key=lambda h: h.get("date", ""))
+    month_ago    = (datetime.now(timezone.utc) - timedelta(days=30)).date().isoformat()
+    last_entry   = hist_sorted[-1] if hist_sorted else None
+    old_entry    = next((h for h in reversed(hist_sorted) if h.get("date", "") <= month_ago), None)
+    trend_30j    = None
+    if last_entry and old_entry and last_entry.get("date") != old_entry.get("date"):
+        trend_30j = (last_entry.get("nb_total") or 0) - (old_entry.get("nb_total") or 0)
+    activite = {
+        "date_premiere_obs": ent_data.get("date_premiere_obs"),
+        "date_derniere_obs": last_entry.get("date") if last_entry else None,
+        "nb_obs":            len(historique),
+        "trend_30j":         trend_30j,
+    }
+
     annonces_out = [
         {
             "id":      r.get("id_annonce"),
@@ -276,6 +329,7 @@ def entite(nom):
         "siren":      ent_data.get("siren"),
         "sur_lbc":    ent_data.get("sur_lbc"),
         "sur_seloger": ent_data.get("sur_seloger"),
+        "activite":   activite,
         "zones":      zones_out,
         "annonces":   annonces_out,
     })
