@@ -105,18 +105,43 @@ def _parse_seloger(html: str) -> tuple[list, dict, int]:
 # Helpers URL + insertion stg_*
 # ---------------------------------------------------------------------------
 
+def _geocode(commune: str, cp: str) -> tuple[float, float] | None:
+    try:
+        r = requests.get(
+            "https://api-adresse.data.gouv.fr/search/",
+            params={"q": commune, "postcode": cp, "type": "municipality", "limit": 1},
+            timeout=5,
+        )
+        if r.status_code != 200:
+            return None
+        features = r.json().get("features", [])
+        if not features:
+            return None
+        lon, lat = features[0]["geometry"]["coordinates"]
+        return lat, lon
+    except Exception:
+        return None
+
+
 def _lbc_base(commune: str, cp: str) -> str:
-    # On nettoie le nom de la commune pour le paramètre d'URL (ex: "Rive-de-Gier" -> "Rive-de-Gier")
-    slug = unicodedata.normalize("NFKD", commune) # On garde les majuscules et tirets d'origine pour leur moteur
+    slug = unicodedata.normalize("NFKD", commune)
     slug = "".join(c for c in slug if not unicodedata.combining(c))
-    
-    # On utilise le nouveau format d'URL globale de recherche par Code Postal
+    coords = _geocode(commune, cp)
+    if coords:
+        lat, lon = coords
+        return (
+            "https://www.leboncoin.fr/recherche"
+            "?category=9"
+            f"&locations={slug}_{cp}__{lat}_{lon}_5000"
+            "&owner_type=all"
+        )
+    # Fallback sans géocodage — appartements uniquement
+    _warn(f"Géocodage échoué pour {commune} {cp} — fallback appartements seuls")
     return (
         "https://www.leboncoin.fr/recherche"
         "?category=9"
         f"&locations={slug}_{cp}"
-        "&real_estate_type=2"   # appartement
-        "&real_estate_type=1"   # maison (paramètre répété — pas de virgule)
+        "&real_estate_type=2"
     )
 
 
