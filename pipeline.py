@@ -11,7 +11,7 @@ Usage :
   python3 pipeline.py enrich [--all] [--dry-run]
 """
 
-import argparse, json, math, os, re, sys, time, unicodedata
+import argparse, json, math, os, re, sys, threading, time, unicodedata
 from urllib.parse import quote as _urlquote
 import lzstring, requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -63,17 +63,45 @@ def _sb():
     return create_client(os.environ["SUPA_URL"], os.environ["SUPA_KEY"])
 
 
+def _upload_html(filepath: Path) -> None:
+    """Upload un fichier HTML vers Supabase Storage (bucket debug-html) en arrière-plan."""
+    svc_key = os.environ.get("SUPA_SERVICE_KEY")
+    if not svc_key:
+        return
+    def _do():
+        try:
+            from supabase import create_client
+            sb = create_client(os.environ["SUPA_URL"], svc_key)
+            with open(filepath, "rb") as fh:
+                content = fh.read()
+            sb.storage.from_("debug-html").upload(
+                path=filepath.name,
+                file=content,
+                file_options={"content-type": "text/html", "upsert": "true"},
+            )
+        except Exception:
+            pass  # upload non bloquant — échec silencieux
+    threading.Thread(target=_do, daemon=True).start()
+
+
+_LBC_STEALTH_PARAMS = {"render_js": "true", "stealth_proxy": "true", "wait": "6000",
+                       "block_resources": "false", "country_code": "fr"}
+
+
 def _fetch(pid: str, url: str, params: dict, timeout: int) -> dict:
-    """Fetche une URL via ScrapingBee. Backoff automatique sur HTTP 500 (wait +2000ms, 2 retries)."""
+    """Fetche une URL via ScrapingBee. Backoff automatique sur HTTP 500 (wait +2000ms, 4 retries max).
+    Si LBC retourne un code 613 (Datadome block sur premium proxy), bascule sur stealth_proxy."""
     t0 = time.time()
     current_params = dict(params)
-    max_attempts = 3 if "wait" in params else 1
+    max_attempts = 5 if "wait" in params else 1
+    stealth_fallback = False
 
     for attempt in range(max_attempts):
         if attempt > 0:
             extra = attempt * 2000
-            current_params["wait"] = str(int(params["wait"]) + extra)
-            pause = attempt * 15  # 15s, 30s entre tentatives — laisse LBC/ScrapingBee récupérer
+            base_wait = _LBC_STEALTH_PARAMS["wait"] if stealth_fallback else params["wait"]
+            current_params["wait"] = str(int(base_wait) + extra)
+            pause = attempt * 15
             print(f"    ↩ retry {attempt} dans {pause}s (wait={current_params['wait']}ms)...", end=" ", flush=True)
             time.sleep(pause)
         try:
@@ -81,10 +109,17 @@ def _fetch(pid: str, url: str, params: dict, timeout: int) -> dict:
                              params={"api_key": os.environ["SCRAPINGBEE_KEY"], "url": url, **current_params},
                              timeout=timeout)
             html = r.content.decode("utf-8", errors="replace")
-            (DEBUG / f"{pid}.html").write_text(html, encoding="utf-8")
+            _html_path = DEBUG / f"{pid}.html"
+            _html_path.write_text(html, encoding="utf-8")
+            _upload_html(_html_path)
             if r.status_code == 200:
                 return {"id": pid, "url": url, "status": 200, "html": html,
                         "error": None, "elapsed": round(time.time() - t0, 1)}
+            # 613 = Datadome block sur premium proxy → bascule stealth pour les tentatives suivantes
+            if r.status_code == 500 and "Server responded with 613" in html and not stealth_fallback:
+                stealth_fallback = True
+                current_params = dict(_LBC_STEALTH_PARAMS)
+                print(f"    ⚡ 613 → stealth", end=" ", flush=True)
             if attempt == max_attempts - 1:
                 return {"id": pid, "url": url, "status": r.status_code, "html": html,
                         "error": None, "elapsed": round(time.time() - t0, 1)}
@@ -468,7 +503,7 @@ def cmd_scrape(cp: str, commune: str, sl_code: str | None = None,
     r_lbc = {"status": None, "html": ""}
     if do_lbc:
         print(f"  LBC p1...", end=" ", flush=True)
-        r_lbc = _fetch(f"lbc_{cp}_p1", _lbc_page(lbc_base, 1), LBC_PARAMS, timeout=120)
+        r_lbc = _fetch(f"lbc_{cp}_p1", _lbc_page(lbc_base, 1), LBC_PARAMS, timeout=180)
         lbc_ads, lbc_raw, lbc_total = _parse_lbc(r_lbc["html"]) if r_lbc["status"] == 200 else ([], {}, 0)
         lbc_pages = max(1, math.ceil(lbc_total / 35)) if lbc_total else 0
         print(f"{'OK — ' + str(lbc_total) + ' ann. → ' + str(lbc_pages) + ' pages' if r_lbc['status'] == 200 else 'ECHEC HTTP ' + str(r_lbc['status'])}")
@@ -525,7 +560,7 @@ def cmd_scrape(cp: str, commune: str, sl_code: str | None = None,
             tasks.append(("seloger", p, f"{sl_base}&page={p}",   SL_PARAMS,  45))
     if do_lbc:
         for p in range(2, lbc_pages + 1):
-            tasks.append(("lbc",     p, _lbc_page(lbc_base, p),  LBC_PARAMS, 120))
+            tasks.append(("lbc",     p, _lbc_page(lbc_base, p),  LBC_PARAMS, 180))
 
     total_sl  = len(sl_ids)
     total_lbc = len(lbc_ads)
@@ -604,10 +639,19 @@ def cmd_retry(cp: str, commune: str | None = None, wait_override: int | None = N
     # Filtrer ceux qui ont vraiment des erreurs
     states_with_errors = []
     for sf in candidates:
-        if sf.exists():
-            st = json.loads(sf.read_text(encoding="utf-8"))
-            if st.get("pages_erreur_lbc") or st.get("pages_erreur_sl"):
-                states_with_errors.append((sf, st))
+        if not sf.exists():
+            continue
+        try:
+            raw = sf.read_text(encoding="utf-8").strip()
+            if not raw:
+                _warn(f"State file vide ignoré : {sf.name}")
+                continue
+            st = json.loads(raw)
+        except (json.JSONDecodeError, OSError) as e:
+            _warn(f"State file illisible ({sf.name}) : {e}")
+            continue
+        if st.get("pages_erreur_lbc") or st.get("pages_erreur_sl"):
+            states_with_errors.append((sf, st))
 
     if not states_with_errors:
         if candidates:
@@ -647,7 +691,7 @@ def cmd_retry(cp: str, commune: str | None = None, wait_override: int | None = N
     tasks = []
     if lbc_base:
         for p in err_lbc:
-            tasks.append(("lbc",     p, _lbc_page(lbc_base, p),      lbc_params, 120))
+            tasks.append(("lbc",     p, _lbc_page(lbc_base, p),      lbc_params, 180))
     if sl_base:
         for p in err_sl:
             url = sl_base if p == 1 else f"{sl_base}&page={p}"

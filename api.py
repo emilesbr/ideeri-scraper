@@ -466,13 +466,14 @@ def incomplete():
         for sf in sorted(debug_dir.glob("scrape_state_*.json")):
             try:
                 state   = json.loads(sf.read_text(encoding="utf-8"))
-                cp      = sf.stem.replace("scrape_state_", "")
+                cp      = state.get("cp") or ""
+                commune = state.get("commune") or cp
                 err_lbc = state.get("pages_erreur_lbc", [])
                 err_sl  = state.get("pages_erreur_sl",  [])
-                if err_lbc or err_sl:
+                if cp and (err_lbc or err_sl):
                     result.append({
                         "cp":              cp,
-                        "commune":         state.get("commune", cp),
+                        "commune":         commune,
                         "pages_erreur_lbc": err_lbc,
                         "pages_erreur_sl":  err_sl,
                         "source":          "scrape_incomplet",
@@ -510,6 +511,47 @@ def incomplete():
         pass
 
     return jsonify(result)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/zone/<cp>/state?commune=  — retourne le scrape_state (URLs sauvegardées)
+# ---------------------------------------------------------------------------
+
+@app.route("/api/zone/<cp>/state")
+def zone_state(cp):
+    commune = (request.args.get("commune") or "").strip()
+    debug_dir = HERE / "debug"
+    slug = re.sub(r"[^a-z0-9]+", "_",
+                  "".join(c for c in unicodedata.normalize("NFKD", commune.lower())
+                          if not unicodedata.combining(c))).strip("_") if commune else ""
+
+    sf = debug_dir / f"scrape_state_{cp}_{slug}.json" if slug else None
+    if sf and sf.exists():
+        state = json.loads(sf.read_text(encoding="utf-8"))
+    else:
+        matches = [f for f in debug_dir.glob(f"scrape_state_{cp}_*.json")
+                   if not commune or _norm(json.loads(f.read_text()).get("commune", "")) == _norm(commune)]
+        state = json.loads(matches[0].read_text(encoding="utf-8")) if matches else {}
+
+    # Extraire le sl_code depuis sl_base (ex: locations=AD08FR28766)
+    sl_base = state.get("sl_base", "")
+    sl_code = ""
+    m = re.search(r"locations=([A-Z0-9]+)", sl_base)
+    if m:
+        sl_code = m.group(1)
+
+    # Ne pas retourner lbc_base si lbc_pages=0 (URL échouée — forcer une saisie fraîche)
+    lbc_base = state.get("lbc_base", "") if state.get("lbc_pages", 0) > 0 else ""
+
+    return jsonify({
+        "sl_code":  sl_code,
+        "lbc_base": lbc_base,
+        "sl_base":  sl_base,
+        "lbc_pages": state.get("lbc_pages", 0),
+        "sl_pages":  state.get("sl_pages", 0),
+        "pages_erreur_lbc": state.get("pages_erreur_lbc") or [],
+        "pages_erreur_sl":  state.get("pages_erreur_sl") or [],
+    })
 
 
 # ---------------------------------------------------------------------------

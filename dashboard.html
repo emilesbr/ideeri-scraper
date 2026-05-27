@@ -138,6 +138,12 @@ tr:hover td { background: #fafbfc; cursor: pointer; }
 .dot-error   { background: #fc8181; }
 .dot-never   { background: #4a5568; }
 .ent-activity { font-size: 11px; color: #a0aec0; margin-top: 5px; }
+.ent-cb { width: 15px; height: 15px; cursor: pointer; accent-color: #805ad5; }
+.sel-tag { display: inline-flex; align-items: center; gap: 4px; background: #faf5ff;
+           color: #553c9a; border: 1px solid #d6bcfa; border-radius: 99px;
+           padding: 2px 10px 2px 8px; font-size: 11px; font-weight: 500; margin: 2px 3px; }
+.sel-tag .sel-tag-x { cursor: pointer; opacity: .5; font-size: 14px; line-height: 1; }
+.sel-tag .sel-tag-x:hover { opacity: 1; }
 .mini-bar { position: fixed; bottom: 0; right: 24px; width: 290px; background: #1e2a3a;
             border-radius: 8px 8px 0 0; box-shadow: 0 -4px 24px rgba(0,0,0,.4);
             z-index: 300; cursor: pointer; user-select: none; }
@@ -265,6 +271,7 @@ let zoneData = null;
 
 let retryCurrentCp = '';
 let retryCurrentCommune = '';
+let selectedEntities = new Set();
 
 // ── Mini-bar (modal réduit) ──────────────────────────────────────────────────
 let _miniTarget = null;
@@ -482,6 +489,7 @@ async function selectZone(cp, commune) {
     const params = commune ? `?commune=${encodeURIComponent(commune)}` : '';
     zoneData = await apiFetch('/zone/'+cp+params);
     sortCol = 'mandats'; sortAsc = false;
+    selectedEntities = new Set();
     renderZone();
   } catch(e) {
     document.getElementById('main').innerHTML =
@@ -499,9 +507,10 @@ function renderZone() {
     if (typeof va==='string') return sortAsc?va.localeCompare(vb):vb.localeCompare(va);
     return sortAsc?va-vb:vb-va;
   });
-  const pctLbc  = totalMandats ? Math.round((z.nb_mandats_lbc||0)/totalMandats*100)  : 0;
-  const pctSl   = totalMandats ? Math.round((z.nb_mandats_sl||0)/totalMandats*100)   : 0;
-  const pctBoth = totalMandats ? Math.round((z.nb_mandats_both||0)/totalMandats*100) : 0;
+  const nbBiens = z.nb_biens || 0;
+  const pctLbc  = nbBiens ? Math.round((z.nb_mandats_lbc||0)/nbBiens*100)  : 0;
+  const pctSl   = nbBiens ? Math.round((z.nb_mandats_sl||0)/nbBiens*100)   : 0;
+  const pctBoth = nbBiens ? Math.round((z.nb_mandats_both||0)/nbBiens*100) : 0;
   const pctMulti= z.nb_biens   ? Math.round((z.nb_multi_mandats||0)/z.nb_biens*100)  : 0;
   const pctDpe  = z.nb_annonces? Math.round((z.nb_dpe||0)/z.nb_annonces*100)         : 0;
   const thS = (col, lbl) =>
@@ -520,14 +529,17 @@ function renderZone() {
         <div class="page-title">${z.commune} <span style="font-weight:400;font-size:16px;color:#718096">${z.cp}</span></div>
         <div class="page-sub">Dernier run : ${z.last_run||'—'}${rsExtra?' · '+rsExtra:''} · ${z.nb_annonces||0} annonces actives</div>
       </div>
-      <button class="btn btn-primary" onclick="openRunModal('${z.cp}','${esc(z.commune)}')">▶ Relancer</button>
+      <div style="display:flex;gap:8px">
+        ${(rs.err_lbc?.length||rs.err_sl?.length)?`<button class="btn btn-ghost" style="color:#ed8936;border:1px solid #f6ad55" onclick="openRetryFromZone()">↩ Retry pages manquantes</button>`:''}
+        <button class="btn btn-primary" onclick="openRunModal('${z.cp}','${esc(z.commune)}')">▶ Relancer</button>
+      </div>
     </div>
     <div class="content">
       <div class="cards">
         <div class="card"><div class="card-lbl">Biens uniques</div><div class="card-val">${z.nb_biens||0}</div><div class="card-sub">après déduplication</div></div>
         <div class="card"><div class="card-lbl">Mandats réels</div><div class="card-val">${totalMandats}</div><div class="card-sub"><strong>${(totalMandats/Math.max(z.nb_biens||1,1)).toFixed(2)}</strong> mandat / bien</div></div>
         <div class="card"><div class="card-lbl">Entités actives</div><div class="card-val">${z.nb_entites||0}</div><div class="card-sub">agences + particuliers</div></div>
-        <div class="card"><div class="card-lbl">Multi-mandats</div><div class="card-val">${z.nb_multi_mandats||0}</div><div class="card-sub"><strong>${pctMulti}%</strong> des biens</div></div>
+        <div class="card"><div class="card-lbl">Biens en multimandat</div><div class="card-val">${z.nb_multi_mandats||0}</div><div class="card-sub"><strong>${pctMulti}%</strong> des biens</div></div>
         <div class="card"><div class="card-lbl">Couverture DPE</div><div class="card-val">${pctDpe}%</div><div class="card-sub">${z.nb_dpe||0} / ${z.nb_annonces||0} annonces</div></div>
       </div>
       <div class="grid2">
@@ -552,6 +564,13 @@ function renderZone() {
           </div>
         </div>
       </div>
+      <div class="panel" id="sel-panel" style="margin-bottom:14px;display:none">
+        <div class="p-head">
+          <span class="p-title">Comparaison — sélection vs marché</span>
+          <button onclick="clearSelection()" class="btn btn-ghost" style="font-size:11px;padding:4px 10px">Tout désélectionner</button>
+        </div>
+        <div class="p-body" id="sel-body"></div>
+      </div>
       <div class="panel">
         <div class="p-head">
           <span class="p-title">Classement des entités — part de marché</span>
@@ -559,6 +578,7 @@ function renderZone() {
         </div>
         <table>
           <thead><tr>
+            <th style="width:32px;text-align:center"><input type="checkbox" class="ent-cb" id="cb-all" onchange="toggleAllEntities(this.checked)"></th>
             <th style="width:40px">#</th>
             ${thS('nom','Entité')}
             ${thS('mandats','Mandats')}
@@ -574,15 +594,19 @@ function renderZone() {
               const tb  = e.type==='particulier'?'<span class="tag-part">particulier</span>'
                 :e.type==='promoteur'?'<span class="badge" style="background:#e0f2fe;color:#0369a1">promoteur</span>'
                 :'<span style="color:#718096;font-size:11px">agence</span>';
-              return `<tr onclick="showEntite('${encodeURIComponent(e.nom)}')">
-                <td><span class="rank ${rk}">${i+1}</span></td>
-                <td><span class="ent-name">${e.nom}</span></td>
-                <td><strong>${e.nb_mandats}</strong></td>
-                <td><div class="pdm-wrap"><div class="pdm-bg"><div class="pdm-fill" style="width:${pdm}%;background:${col}"></div></div><span class="pdm-pct" style="color:${col}">${pdm}%</span></div></td>
-                <td>${e.nb_biens}</td>
-                <td>${e.nb_lbc?`<span class="badge b-lbc">${e.nb_lbc}</span>`:'<span class="dimmed">—</span>'}</td>
-                <td>${e.nb_seloger?`<span class="badge b-sl">${e.nb_seloger}</span>`:'<span class="dimmed">—</span>'}</td>
-                <td>${tb}</td>
+              const checked = selectedEntities.has(e.nom) ? 'checked' : '';
+              return `<tr>
+                <td style="text-align:center" onclick="event.stopPropagation()">
+                  <input type="checkbox" class="ent-cb" data-nom="${htmlEsc(e.nom)}" ${checked} onchange="toggleEntity(this)">
+                </td>
+                <td onclick="showEntite('${encodeURIComponent(e.nom)}')"><span class="rank ${rk}">${i+1}</span></td>
+                <td onclick="showEntite('${encodeURIComponent(e.nom)}')"><span class="ent-name">${e.nom}</span></td>
+                <td onclick="showEntite('${encodeURIComponent(e.nom)}')"><strong>${e.nb_mandats}</strong></td>
+                <td onclick="showEntite('${encodeURIComponent(e.nom)}')"><div class="pdm-wrap"><div class="pdm-bg"><div class="pdm-fill" style="width:${pdm}%;background:${col}"></div></div><span class="pdm-pct" style="color:${col}">${pdm}%</span></div></td>
+                <td onclick="showEntite('${encodeURIComponent(e.nom)}')"><span>${e.nb_biens}</span></td>
+                <td onclick="showEntite('${encodeURIComponent(e.nom)}')">${e.nb_lbc?`<span class="badge b-lbc">${e.nb_lbc}</span>`:'<span class="dimmed">—</span>'}</td>
+                <td onclick="showEntite('${encodeURIComponent(e.nom)}')">${e.nb_seloger?`<span class="badge b-sl">${e.nb_seloger}</span>`:'<span class="dimmed">—</span>'}</td>
+                <td onclick="showEntite('${encodeURIComponent(e.nom)}')">${tb}</td>
               </tr>`;
             }).join('')}
           </tbody>
@@ -699,10 +723,11 @@ async function showEntite(encodedNom) {
 }
 
 // ── Run modal ────────────────────────────────────────────────────────────────
-function openRunModal(cp, commune) {
+async function openRunModal(cp, commune) {
   document.getElementById('r-cp').value      = cp||'';
   document.getElementById('r-commune').value = commune||'';
   document.getElementById('r-slcode').value  = '';
+  document.getElementById('r-lbcloc').value  = '';
   document.getElementById('r-source').value  = '';
   document.getElementById('run-form').style.display = 'block';
   document.getElementById('run-log').style.display  = 'none';
@@ -710,6 +735,24 @@ function openRunModal(cp, commune) {
   const btn = document.getElementById('run-action-btn');
   btn.textContent='▶ Lancer'; btn.disabled=false; btn.onclick=startRun;
   document.getElementById('run-overlay').classList.add('open');
+  if (cp && commune) {
+    try {
+      const st = await apiFetch(`/zone/${cp}/state?commune=${encodeURIComponent(commune)}`);
+      if (st.sl_code)  document.getElementById('r-slcode').value = st.sl_code;
+      if (st.lbc_base) document.getElementById('r-lbcloc').value = st.lbc_base;
+    } catch(e) { /* pas de state — laisser vide */ }
+  }
+}
+
+function openRetryFromZone() {
+  const z = zoneData;
+  if (!z) return;
+  const rs = z.run_status || {};
+  openRetryModal(z.cp, z.commune, {
+    pages_erreur_lbc: rs.err_lbc || [],
+    pages_erreur_sl:  rs.err_sl  || [],
+    statut: rs.status,
+  });
 }
 function closeRunModal() {
   document.getElementById('run-overlay').classList.remove('open');
@@ -775,14 +818,106 @@ async function startRun() {
   }
 }
 
+// ── Sélection entités ────────────────────────────────────────────────────────
+function toggleEntity(cb) {
+  const nom = cb.dataset.nom;
+  if (cb.checked) selectedEntities.add(nom);
+  else selectedEntities.delete(nom);
+  _syncCbAll();
+  updateSelectionPanel();
+}
+
+function toggleAllEntities(checked) {
+  const z = zoneData;
+  if (!z) return;
+  (z.entites || []).forEach(e => {
+    if (checked) selectedEntities.add(e.nom);
+    else selectedEntities.delete(e.nom);
+  });
+  document.querySelectorAll('.ent-cb:not(#cb-all)').forEach(cb => cb.checked = checked);
+  updateSelectionPanel();
+}
+
+function clearSelection() {
+  selectedEntities.clear();
+  document.querySelectorAll('.ent-cb').forEach(cb => cb.checked = false);
+  updateSelectionPanel();
+}
+
+function _syncCbAll() {
+  const all  = document.querySelectorAll('.ent-cb:not(#cb-all)');
+  const chk  = document.querySelectorAll('.ent-cb:not(#cb-all):checked');
+  const cbAll = document.getElementById('cb-all');
+  if (!cbAll) return;
+  cbAll.checked       = chk.length === all.length && all.length > 0;
+  cbAll.indeterminate = chk.length > 0 && chk.length < all.length;
+}
+
+function removeFromSel(nom) {
+  selectedEntities.delete(nom);
+  document.querySelectorAll('.ent-cb:not(#cb-all)').forEach(cb => {
+    if (cb.dataset.nom === nom) cb.checked = false;
+  });
+  _syncCbAll();
+  updateSelectionPanel();
+}
+
+function updateSelectionPanel() {
+  const z = zoneData;
+  if (!z) return;
+  const panel = document.getElementById('sel-panel');
+  const body  = document.getElementById('sel-body');
+  if (!panel || !body) return;
+
+  if (selectedEntities.size === 0) {
+    panel.style.display = 'none';
+    return;
+  }
+  panel.style.display = 'block';
+
+  const entites      = z.entites || [];
+  const totalMandats = z.nb_mandats || 0;
+  const totalBiens   = z.nb_biens   || 0;
+
+  const selList     = entites.filter(e => selectedEntities.has(e.nom));
+  const selMandats  = selList.reduce((s, e) => s + e.nb_mandats, 0);
+  const selBiens    = selList.reduce((s, e) => s + e.nb_biens,   0);
+  const othMandats  = totalMandats - selMandats;
+  const othBiens    = totalBiens   - selBiens;
+  const othCount    = entites.length - selectedEntities.size;
+
+  const selPct = totalMandats ? Math.round(selMandats / totalMandats * 100) : 0;
+  const othPct = 100 - selPct;
+
+  const tags = [...selectedEntities].map(nom =>
+    `<span class="sel-tag">${htmlEsc(nom)}<span class="sel-tag-x" onclick="removeFromSel(${JSON.stringify(nom)})">×</span></span>`
+  ).join('');
+
+  body.innerHTML = `
+    <div style="margin-bottom:14px;line-height:2">${tags}</div>
+    <div class="bar-row">
+      <span class="bar-lbl" style="width:160px;font-weight:600;color:#553c9a">Sélection (${selectedEntities.size})</span>
+      <div class="bar-wrap"><div class="bar-fill" style="width:${selPct}%;background:#805ad5"></div></div>
+      <span class="bar-pct" style="width:42px;color:#805ad5">${selPct}%</span>
+      <span style="font-size:11px;color:#718096">${selMandats} mandat${selMandats>1?'s':''} · ${selBiens} bien${selBiens>1?'s':''} uniq.</span>
+    </div>
+    <div class="bar-row">
+      <span class="bar-lbl" style="width:160px;color:#718096">Autres (${othCount})</span>
+      <div class="bar-wrap"><div class="bar-fill" style="width:${othPct}%;background:#cbd5e0"></div></div>
+      <span class="bar-pct" style="width:42px;color:#a0aec0">${othPct}%</span>
+      <span style="font-size:11px;color:#a0aec0">${othMandats} mandat${othMandats>1?'s':''} · ${othBiens} bien${othBiens>1?'s':''} uniq.</span>
+    </div>`;
+}
+
 // ── Utils ────────────────────────────────────────────────────────────────────
 async function apiFetch(path) {
   const r = await fetch(API+path);
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
 }
-function fmt(n) { return n?.toLocaleString('fr-FR')?? '—'; }
-function esc(s) { return (s||'').replace(/'/g,"\\'"); }
+function fmt(n)     { return n?.toLocaleString('fr-FR')?? '—'; }
+function esc(s)     { return (s||'').replace(/'/g,"\\'"); }
+function htmlEsc(s) { return (s||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
 loadZones();
 loadAlerts();
