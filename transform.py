@@ -410,15 +410,15 @@ def upsert_annonce(ann: dict, entite_id: str | None, run_id: int, scraped_at: st
     if ann.get("prix_affiche") and ann.get("surface") and ann["surface"] > 0:
         prix_m2 = round(ann["prix_affiche"] / ann["surface"], 2)
 
-    existing = sb.table("annonces").select(
+    existing = _sb_execute(sb.table("annonces").select(
         "id_annonce, prix_affiche, historique_prix, date_premiere_obs, run_id_premiere_obs, "
         "dpe, ges, energie_budget_min, energie_budget_max, annee_construction, etage"
-    ).eq("id_annonce", id_ann).execute().data
+    ).eq("id_annonce", id_ann)).data
 
     now = scraped_at
 
     if not existing:
-        sb.table("annonces").insert({
+        _sb_execute(sb.table("annonces").insert({
             "id_annonce":          id_ann,
             "source":              ann["source"],
             "type_bien":           ann.get("type_bien"),
@@ -453,7 +453,7 @@ def upsert_annonce(ann: dict, entite_id: str | None, run_id: int, scraped_at: st
                 ann["_entity"].get("siren"), ann["_entity"].get("type", "agence"),
                 ann["_entity"].get("nom", ""), ann.get("code_postal", ""),
             ),
-        }).execute()
+        }))
         return "new"
 
     row = existing[0]
@@ -495,7 +495,7 @@ def upsert_annonce(ann: dict, entite_id: str | None, run_id: int, scraped_at: st
         updates["historique_prix"] = hist
         status = "price_change"
 
-    sb.table("annonces").update(updates).eq("id_annonce", id_ann).execute()
+    _sb_execute(sb.table("annonces").update(updates).eq("id_annonce", id_ann))
     return status
 
 
@@ -504,13 +504,13 @@ def upsert_annonce(ann: dict, entite_id: str | None, run_id: int, scraped_at: st
 # ---------------------------------------------------------------------------
 
 def mark_inactive(code_postal: str, source: str, seen_ids: set[str], scraped_at: str) -> int:
-    active = sb.table("annonces").select("id_annonce").eq("code_postal", code_postal).eq("source", source).eq("est_active", True).execute().data
+    active = _sb_execute(sb.table("annonces").select("id_annonce").eq("code_postal", code_postal).eq("source", source).eq("est_active", True)).data
     disparus = [r["id_annonce"] for r in active if r["id_annonce"] not in seen_ids]
     if disparus:
-        sb.table("annonces").update({
+        _sb_execute(sb.table("annonces").update({
             "est_active":        False,
             "date_derniere_obs": scraped_at,
-        }).in_("id_annonce", disparus).execute()
+        }).in_("id_annonce", disparus))
     return len(disparus)
 
 
@@ -578,12 +578,12 @@ def intra_entity_match(code_postal: str) -> int:
         "id_annonce, source, type_bien, surface, prix_affiche, nb_pieces, "
         "dpe, ges, annee_construction, entite_id, bien_id"
     )
-    lbc = (sb.table("annonces").select(fields)
+    lbc = _sb_execute(sb.table("annonces").select(fields)
            .eq("code_postal", code_postal).eq("source", "lbc").eq("est_active", True)
-           .not_.is_("entite_id", "null").execute().data)
-    sl  = (sb.table("annonces").select(fields)
+           .not_.is_("entite_id", "null")).data
+    sl  = _sb_execute(sb.table("annonces").select(fields)
            .eq("code_postal", code_postal).eq("source", "seloger").eq("est_active", True)
-           .not_.is_("entite_id", "null").execute().data)
+           .not_.is_("entite_id", "null")).data
     if not lbc or not sl:
         return 0
 
@@ -609,12 +609,12 @@ def intra_entity_match(code_postal: str) -> int:
             continue
         lbc_id = a["id_annonce"]
         conf = round(score, 3)
-        sb.table("annonces").update({
+        _sb_execute(sb.table("annonces").update({
             "sur_seloger": True, "match_confidence": conf, "bien_id": lbc_id,
-        }).eq("id_annonce", lbc_id).execute()
-        sb.table("annonces").update({
+        }).eq("id_annonce", lbc_id))
+        _sb_execute(sb.table("annonces").update({
             "sur_lbc": True, "match_confidence": conf, "bien_id": lbc_id,
-        }).eq("id_annonce", b["id_annonce"]).execute()
+        }).eq("id_annonce", b["id_annonce"]))
         matched_lbc.add(lbc_id)
         matched_sl.add(b["id_annonce"])
         n += 1
@@ -630,9 +630,9 @@ def cross_entity_match(code_postal: str) -> dict:
         "id_annonce, source, type_bien, surface, prix_affiche, nb_pieces, "
         "dpe, ges, annee_construction, entite_id, cluster_bien_id"
     )
-    ads = (sb.table("annonces").select(fields)
+    ads = _sb_execute(sb.table("annonces").select(fields)
            .eq("code_postal", code_postal).eq("est_active", True)
-           .not_.is_("entite_id", "null").execute().data)
+           .not_.is_("entite_id", "null")).data
     if len(ads) < 2:
         return {"n_clusters": 0, "n_annonces": 0}
 
@@ -697,11 +697,11 @@ def cross_entity_match(code_postal: str) -> dict:
 
         for mid in members:
             if ad_map[mid].get("cluster_bien_id") != cluster_id:
-                sb.table("annonces").update({
+                _sb_execute(sb.table("annonces").update({
                     "cluster_bien_id":    cluster_id,
                     "cluster_confidence": avg_conf,
                     "bien_id":            cluster_id,
-                }).eq("id_annonce", mid).execute()
+                }).eq("id_annonce", mid))
 
         n_clusters += 1
         n_touched  += len(members)
@@ -746,13 +746,23 @@ def run_transform(code_postal: str, commune: str = "",
             ("seloger", "stg_seloger", parse_seloger_ads),
         ]:
             print(f"\n  [{source.upper()}]")
-            rows = _sb_execute(
-                sb.table(table).select("*").eq("data_brute->_meta->>code_postal", code_postal)
+            latest = _sb_execute(
+                sb.table(table).select("scraped_at")
+                .eq("code_postal", code_postal)
+                .order("scraped_at", desc=True).limit(1)
             ).data
-            if not rows:
-                rows = _sb_execute(sb.table(table).select("*")).data
+            if not latest:
+                print(f"    (aucune donnée pour {code_postal})")
+                continue
+            latest_date = latest[0]["scraped_at"][:10]
+            rows = _sb_execute(
+                sb.table(table).select("*")
+                .eq("code_postal", code_postal)
+                .gte("scraped_at", latest_date)
+            ).data
 
             seen_ids: set[str] = set()
+            stg_ids: list[int] = []
             for row in rows:
                 raw = row.get("data_brute", {})
                 ads = parser(raw)
@@ -768,6 +778,13 @@ def run_transform(code_postal: str, commune: str = "",
                         stats["nouvelles"] += 1
                     elif status == "price_change":
                         stats["prix_modifies"] += 1
+                stg_ids.append(row["id"])
+
+            if stg_ids:
+                _sb_execute(sb.table(table).update({
+                    "processed":    True,
+                    "processed_at": scraped_at,
+                }).in_("id", stg_ids))
 
             n_disparus = mark_inactive(code_postal, source, seen_ids, scraped_at)
             stats["disparues"] += n_disparus
@@ -803,10 +820,10 @@ def run_transform(code_postal: str, commune: str = "",
     except Exception as e:
         duree = int(time.time() - t0)
         try:
-            sb.table("runs").update({
+            _sb_execute(sb.table("runs").update({
                 "statut": "error", "duree_secondes": duree,
                 "nb_annonces_trouvees": stats["trouvees"],
-            }).eq("id", run_id).execute()
+            }).eq("id", run_id))
         except Exception:
             pass
         print(f"\n  ❌ Transform run #{run_id} interrompu après {duree}s : {e}")

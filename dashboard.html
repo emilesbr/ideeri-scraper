@@ -119,6 +119,15 @@ tr:hover td { background: #fafbfc; cursor: pointer; }
 .dimmed { color: #cbd5e0; }
 .api-err { background: #fee2e2; color: #991b1b; border-radius: 8px; padding: 12px 16px;
            font-size: 13px; margin: 20px; }
+.alert-item { padding: 9px 18px; cursor: pointer; border-left: 3px solid #e53e3e;
+              background: #1a1010; transition: background .12s; }
+.alert-item:hover { background: #2d1515; }
+.alert-item .a-cp   { font-weight: 600; font-size: 12px; color: #fc8181; }
+.alert-item .a-info { font-size: 10px; color: #fc8181; opacity: .7; margin-top: 2px; }
+.sb-section-alert { padding: 12px 18px 4px; font-size: 10px; text-transform: uppercase;
+                    letter-spacing: .08em; color: #e53e3e; }
+.wait-slider { width: 100%; accent-color: #3182ce; }
+.wait-labels { display: flex; justify-content: space-between; font-size: 11px; color: #718096; margin-top: 4px; }
 </style>
 </head>
 <body>
@@ -127,6 +136,10 @@ tr:hover td { background: #fafbfc; cursor: pointer; }
     <div class="sb-head">Ide<em>eri</em></div>
     <div class="sb-section">Zones</div>
     <div id="zones-list"><div class="empty" style="color:#4a5568;padding:20px;font-size:11px">Chargement…</div></div>
+    <div id="alerts-section" style="display:none">
+      <div class="sb-section-alert">⚠ Incomplets</div>
+      <div id="alerts-list"></div>
+    </div>
     <div class="sb-add" onclick="openRunModal()">+ Nouvelle zone</div>
   </aside>
   <div class="main" id="main">
@@ -165,6 +178,30 @@ tr:hover td { background: #fafbfc; cursor: pointer; }
   </div>
 </div>
 
+<div class="overlay" id="retry-overlay">
+  <div class="modal">
+    <div class="m-head">
+      <span class="m-title" id="retry-title">Retry pages manquantes</span>
+      <button class="m-close" onclick="closeRetryModal()">×</button>
+    </div>
+    <div class="m-body">
+      <div id="retry-form">
+        <div id="retry-info" style="background:#fff3cd;border-radius:8px;padding:12px 14px;margin-bottom:16px;font-size:12px;color:#856404;line-height:1.6"></div>
+        <div class="form-row">
+          <label>Wait LBC (ms) — augmenter si HTTP 500 persistant</label>
+          <input type="range" class="wait-slider" id="retry-wait" min="6000" max="10000" step="2000" value="8000" oninput="updateWaitLabel()">
+          <div class="wait-labels"><span>6 000ms</span><span id="wait-val" style="font-weight:700;color:#2d3748">8 000ms</span><span>10 000ms</span></div>
+        </div>
+      </div>
+      <div id="retry-log" style="display:none"><div class="log-box" id="retry-log-content"></div></div>
+    </div>
+    <div class="m-foot">
+      <button class="btn btn-ghost" onclick="closeRetryModal()">Annuler</button>
+      <button class="btn btn-primary" id="retry-action-btn" onclick="startRetry()">↩ Retry</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const API = 'http://localhost:5000/api';
 let currentCp = '';
@@ -172,6 +209,102 @@ let currentCommune = '';
 let sortCol = 'mandats';
 let sortAsc = false;
 let zoneData = null;
+
+let retryCurrentCp = '';
+let retryCurrentCommune = '';
+
+// ── Alertes runs incomplets ───────────────────────────────────────────────────
+async function loadAlerts() {
+  try {
+    const alerts = await apiFetch('/incomplete');
+    const section = document.getElementById('alerts-section');
+    const list    = document.getElementById('alerts-list');
+    if (!alerts.length) { section.style.display = 'none'; return; }
+    section.style.display = 'block';
+    list.innerHTML = alerts.map(a => {
+      const parts = [];
+      if (a.pages_erreur_lbc?.length) parts.push(`LBC p${a.pages_erreur_lbc.join(',')}`);
+      if (a.pages_erreur_sl?.length)  parts.push(`SL p${a.pages_erreur_sl.join(',')}`);
+      if (a.statut === 'error')   parts.push('transform crashé');
+      if (a.statut === 'running') parts.push('bloqué en running');
+      return `<div class="alert-item" onclick="openRetryModal('${a.cp}','${esc(a.commune)}',${JSON.stringify(a).replace(/'/g,"\\'")})">
+        <div class="a-cp">${a.cp} ${a.commune}</div>
+        <div class="a-info">${parts.join(' · ') || 'incomplet'}</div>
+      </div>`;
+    }).join('');
+  } catch(e) { /* silencieux si l'API n'est pas dispo */ }
+}
+
+function openRetryModal(cp, commune, alert) {
+  retryCurrentCp = cp; retryCurrentCommune = commune;
+  document.getElementById('retry-title').textContent = `Retry — ${commune} ${cp}`;
+
+  const parts = [];
+  if (alert.pages_erreur_lbc?.length) parts.push(`Pages LBC manquantes : ${alert.pages_erreur_lbc.join(', ')}`);
+  if (alert.pages_erreur_sl?.length)  parts.push(`Pages SeLoger manquantes : ${alert.pages_erreur_sl.join(', ')}`);
+  if (alert.statut === 'error')   parts.push('Dernier transform : erreur réseau — relancer le transform');
+  if (alert.statut === 'running') parts.push('Run bloqué en "running" — le transform a crashé');
+  document.getElementById('retry-info').innerHTML = parts.join('<br>') || 'Pages manquantes détectées';
+
+  document.getElementById('retry-wait').value = '8000';
+  document.getElementById('wait-val').textContent = '8 000ms';
+  document.getElementById('retry-form').style.display = 'block';
+  document.getElementById('retry-log').style.display  = 'none';
+  document.getElementById('retry-log-content').innerHTML = '';
+  const btn = document.getElementById('retry-action-btn');
+  btn.textContent = '↩ Retry'; btn.disabled = false; btn.onclick = startRetry;
+  document.getElementById('retry-overlay').classList.add('open');
+}
+
+function closeRetryModal() { document.getElementById('retry-overlay').classList.remove('open'); }
+
+function updateWaitLabel() {
+  const v = document.getElementById('retry-wait').value;
+  document.getElementById('wait-val').textContent = parseInt(v).toLocaleString('fr-FR') + 'ms';
+}
+
+async function startRetry() {
+  const wait = document.getElementById('retry-wait').value;
+  document.getElementById('retry-form').style.display = 'none';
+  document.getElementById('retry-log').style.display  = 'block';
+  const btn = document.getElementById('retry-action-btn');
+  btn.textContent = 'En cours…'; btn.disabled = true;
+
+  const log = document.getElementById('retry-log-content');
+  const add = (line) => {
+    const d = document.createElement('div');
+    d.className = line.includes('✓')||line.includes('OK')?'l-ok'
+      :line.includes('✗')||line.includes('ERR')||line.includes('ECHEC')?'l-err'
+      :line.includes('⚠')||line.includes('WARN')?'l-warn':'';
+    d.textContent = line; log.appendChild(d); log.scrollTop = log.scrollHeight;
+  };
+
+  try {
+    const resp = await fetch(`${API}/retry/${retryCurrentCp}?wait=${wait}`, { method: 'POST' });
+    const reader = resp.body.getReader(), decoder = new TextDecoder();
+    let buf = '';
+    while (true) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, {stream: true});
+      const lines = buf.split('\n'); buf = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const payload = JSON.parse(line.slice(6));
+        if (payload === '__DONE__') {
+          add('✓ Retry terminé');
+          btn.textContent = 'Voir les résultats'; btn.disabled = false;
+          btn.onclick = () => { closeRetryModal(); selectZone(retryCurrentCp, retryCurrentCommune); loadZones(); loadAlerts(); };
+          return;
+        }
+        add(payload);
+      }
+    }
+  } catch(e) {
+    add('✗ Erreur connexion API : ' + e.message);
+    btn.textContent = 'Fermer'; btn.disabled = false; btn.onclick = closeRetryModal;
+  }
+}
 
 // ── Sidebar ─────────────────────────────────────────────────────────────────
 async function loadZones() {
@@ -481,6 +614,7 @@ function fmt(n) { return n?.toLocaleString('fr-FR')?? '—'; }
 function esc(s) { return (s||'').replace(/'/g,"\\'"); }
 
 loadZones();
+loadAlerts();
 </script>
 </body>
 </html>

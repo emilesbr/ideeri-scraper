@@ -108,41 +108,46 @@ def zone(cp):
     nb_mandats_both  = sum(1 for b in biens.values() if b["lbc"] and b["sl"])
     nb_multi_mandats = sum(1 for b in biens.values() if len(b["entites"]) > 1)
 
-    # Entités : nb_mandats = biens distincts par entité
-    ent_map: dict[str, dict] = {}
+    # Entités : grouper par entite_id (canonique) — évite le split LBC/SeLoger par nom
+    ent_map: dict[str, dict] = {}  # key = entite_id si dispo, sinon nom_commercial
     for r in rows:
-        nom = r.get("nom_commercial") or "Inconnu"
-        if nom not in ent_map:
-            ent_map[nom] = {"nb_lbc": 0, "nb_sl": 0, "biens": set()}
-        if r["source"] == "lbc":
-            ent_map[nom]["nb_lbc"] += 1
-        else:
-            ent_map[nom]["nb_sl"] += 1
-        if r.get("bien_id"):
-            ent_map[nom]["biens"].add(r["bien_id"])
+        key = r.get("entite_id") or (r.get("nom_commercial") or "Inconnu")
+        bid = r.get("bien_id")
+        if key not in ent_map:
+            ent_map[key] = {
+                "nom":      r.get("nom_commercial") or "Inconnu",
+                "lbc_biens": set(), "sl_biens": set(), "biens": set(),
+                "type":     "agence",
+            }
+        if bid:
+            ent_map[key]["biens"].add(bid)
+            if r.get("sur_lbc"):     ent_map[key]["lbc_biens"].add(bid)
+            if r.get("sur_seloger"): ent_map[key]["sl_biens"].add(bid)
 
-    # Type des entités : un seul SELECT groupé
-    noms = list(ent_map.keys())
-    ent_type_map: dict[str, str] = {}
-    if noms:
+    # Noms canoniques et types depuis la table entites
+    eids = [k for k in ent_map if isinstance(k, str) and len(k) == 36 and "-" in k]
+    if eids:
         try:
-            et_rows = sb.table("entites").select("nom_commercial, type_entite") \
-                        .in_("nom_commercial", noms[:200]).execute().data
+            et_rows = sb.table("entites").select("id, nom_commercial, type_entite") \
+                        .in_("id", eids[:200]).execute().data
             for et in et_rows:
-                ent_type_map[et["nom_commercial"]] = et.get("type_entite") or "agence"
+                if et["id"] in ent_map:
+                    if et.get("nom_commercial"):
+                        ent_map[et["id"]]["nom"] = et["nom_commercial"]
+                    ent_map[et["id"]]["type"] = et.get("type_entite") or "agence"
         except Exception:
             pass
 
     entites = sorted(
         [{
-            "nom":        n,
-            "nb_mandats": len(v["biens"]),   # nb_mandats = biens uniques de l'entité
-            "nb_biens":   len(v["biens"]),   # alias pour compatibilité tri côté client
-            "nb_lbc":     v["nb_lbc"],
-            "nb_seloger": v["nb_sl"],
-            "type":       ent_type_map.get(n, "agence"),
+            "nom":        v["nom"],
+            "nb_mandats": len(v["biens"]),
+            "nb_biens":   len(v["biens"]),
+            "nb_lbc":     len(v["lbc_biens"]),
+            "nb_seloger": len(v["sl_biens"]),
+            "type":       v["type"],
         }
-         for n, v in ent_map.items()],
+         for v in ent_map.values()],
         key=lambda x: x["nb_mandats"], reverse=True,
     )
 
@@ -338,6 +343,117 @@ def run_pipeline():
         def _feed_stdin():
             try:
                 proc.stdin.write("o\no\n")
+                proc.stdin.flush()
+                proc.stdin.close()
+            except Exception:
+                pass
+
+        threading.Thread(target=_feed_stdin, daemon=True).start()
+
+        for line in proc.stdout:
+            line = _strip_ansi(line.rstrip())
+            if line:
+                yield f"data: {json.dumps(line)}\n\n"
+
+        proc.wait()
+        yield f"data: {json.dumps('__DONE__')}\n\n"
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/incomplete  — zones avec pages manquantes ou runs en erreur
+# ---------------------------------------------------------------------------
+
+@app.route("/api/incomplete")
+def incomplete():
+    result = []
+    seen_cps: set[str] = set()
+
+    debug_dir = HERE / "debug"
+    if debug_dir.exists():
+        for sf in sorted(debug_dir.glob("scrape_state_*.json")):
+            try:
+                state   = json.loads(sf.read_text(encoding="utf-8"))
+                cp      = sf.stem.replace("scrape_state_", "")
+                err_lbc = state.get("pages_erreur_lbc", [])
+                err_sl  = state.get("pages_erreur_sl",  [])
+                if err_lbc or err_sl:
+                    result.append({
+                        "cp":              cp,
+                        "commune":         state.get("commune", cp),
+                        "pages_erreur_lbc": err_lbc,
+                        "pages_erreur_sl":  err_sl,
+                        "source":          "scrape_incomplet",
+                    })
+                    seen_cps.add(cp)
+            except Exception:
+                pass
+
+    try:
+        sb = _sb()
+        # Dernier run par CP (tous statuts)
+        all_runs = sb.table("runs").select("code_postal, commune, scraped_at, statut") \
+                     .order("scraped_at", desc=True).limit(100).execute().data
+
+        # Pour chaque CP, garder le dernier run — s'il est en erreur/running, alerter
+        latest_per_cp: dict[str, dict] = {}
+        for r in all_runs:
+            cp = r.get("code_postal")
+            if cp and cp not in latest_per_cp:
+                latest_per_cp[cp] = r
+
+        for cp, r in latest_per_cp.items():
+            if r.get("statut") in ("error", "running") and cp not in seen_cps:
+                result.append({
+                    "cp":              cp,
+                    "commune":         r.get("commune") or cp,
+                    "pages_erreur_lbc": [],
+                    "pages_erreur_sl":  [],
+                    "statut":          r.get("statut"),
+                    "date":            r["scraped_at"][:16].replace("T", " "),
+                    "source":          "run_erreur",
+                })
+                seen_cps.add(cp)
+    except Exception:
+        pass
+
+    return jsonify(result)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/retry/<cp>?wait=8000  — SSE streaming du retry
+# ---------------------------------------------------------------------------
+
+@app.route("/api/retry/<cp>", methods=["POST"])
+def retry_zone(cp):
+    try:
+        wait = int(request.args.get("wait", "6000"))
+    except ValueError:
+        wait = 6000
+    if wait not in (6000, 8000, 10000):
+        wait = 6000
+
+    cmd = [sys.executable, "pipeline.py", "retry", cp, "--wait", str(wait)]
+
+    def generate():
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+            cwd=str(HERE),
+        )
+
+        def _feed_stdin():
+            try:
+                proc.stdin.write("o\n")
                 proc.stdin.flush()
                 proc.stdin.close()
             except Exception:

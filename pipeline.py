@@ -562,7 +562,7 @@ def cmd_scrape(cp: str, commune: str, sl_code: str | None = None,
 # retry
 # ---------------------------------------------------------------------------
 
-def cmd_retry(cp: str):
+def cmd_retry(cp: str, wait_override: int | None = None):
     state_file = DEBUG / f"scrape_state_{cp}.json"
     if not state_file.exists():
         _err(f"Pas d'état de scrape trouvé pour {cp}")
@@ -583,12 +583,16 @@ def cmd_retry(cp: str):
     print(f"\n{B}=== Retry {commune} ({cp}) ==={RST}\n")
     if err_lbc: print(f"  {Y}Pages LBC manquantes   : {err_lbc}{RST}")
     if err_sl:  print(f"  {Y}Pages SeLoger manquantes: {err_sl}{RST}")
+    if wait_override:
+        print(f"  Wait LBC : {wait_override}ms")
     print()
+
+    lbc_params = {**LBC_PARAMS, "wait": str(wait_override)} if wait_override else LBC_PARAMS
 
     tasks = []
     if lbc_base:
         for p in err_lbc:
-            tasks.append(("lbc",     p, _lbc_page(lbc_base, p),      LBC_PARAMS, 120))
+            tasks.append(("lbc",     p, _lbc_page(lbc_base, p),      lbc_params, 120))
     if sl_base:
         for p in err_sl:
             url = sl_base if p == 1 else f"{sl_base}&page={p}"
@@ -830,6 +834,8 @@ def main():
 
     p = sub.add_parser("retry", help="Re-scrape les pages manquantes d'un run incomplet")
     p.add_argument("cp")
+    p.add_argument("--wait", type=int, default=None, dest="wait_override",
+                   help="Override wait LBC en ms (ex: 8000)")
 
     p = sub.add_parser("reset", help="Réinitialise le matching d'un code postal")
     p.add_argument("cp")
@@ -846,7 +852,7 @@ def main():
         "scrape":    lambda: cmd_scrape(args.cp, args.commune, getattr(args, "sl_code", None), getattr(args, "source", None)),
         "transform": lambda: cmd_transform(args.cp, args.commune),
         "run":       lambda: cmd_run(args.cp, args.commune, getattr(args, "sl_code", None), getattr(args, "source", None)),
-        "retry":     lambda: cmd_retry(args.cp),
+        "retry":     lambda: cmd_retry(args.cp, getattr(args, "wait_override", None)),
         "reset":     lambda: cmd_reset(args.cp),
         "enrich":    lambda: cmd_enrich(getattr(args, "all", False), getattr(args, "dry_run", False)),
     }[args.cmd]()
