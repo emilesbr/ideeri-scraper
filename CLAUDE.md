@@ -40,7 +40,10 @@ ideeri/
 ├── test_scrapingbee.py     # Benchmark 8 combinaisons de paramètres (A–H)
 │
 ├── migration_v2.sql        # SQL idempotent : crée runs, entites, alter annonces/stg_*
+├── migration_sirene.sql    # SQL idempotent : colonnes enrichissement SIRENE dans entites
 ├── migration_stg_tables.sql # SQL intermédiaire (précède migration_v2)
+│
+├── enrich_sirene.py        # Enrichissement SIRENE des entités (denomination, APE, adresse)
 │
 ├── analyser_local.py       # Debug HTML local
 ├── debug_page.py           # Debug page HTML brute
@@ -130,6 +133,15 @@ Une ligne par agence ou particulier, sans doublon inter-portails.
 | `est_client_ideeri`   | boolean     | Flag commercial (défaut false) |
 | `historique_activite` | jsonb       | `[{date, nb_lbc, nb_seloger, nb_total}]` — snapshot par run |
 | `groupe_entite_id`    | uuid FK→entites | Pour fusion manuelle de doublons résiduels |
+| `denomination_sociale`| text        | Nom officiel SIRENE (ex: PATRIMMO SERVICE SASU) |
+| `libelle_forme_juridique` | text    | Ex: "Société par actions simplifiée" |
+| `code_ape`            | text        | Ex: `6831Z` (Agences immobilières) |
+| `libelle_ape`         | text        | Ex: "Agences immobilières" |
+| `adresse_siege`       | text        | Adresse du siège social (SIRENE) |
+| `effectif_salarie`    | text        | Tranche effectif INSEE (`'01'`=1-2, `'02'`=3-5…) |
+| `telephone`           | text        | Non fourni par SIRENE — à enrichir depuis LBC boutique / SeLoger profil |
+| `date_creation_entreprise` | date   | Date de création (SIRENE) |
+| `sirene_enrichi_at`   | timestamptz | Timestamp du dernier enrichissement SIRENE |
 
 **Note migration** : la clé primaire a été migrée de `siret` (NOT NULL, ancien schéma SIRENE)
 vers `id` (uuid). `siret` est maintenant nullable. La contrainte UNIQUE est sur `signature`.
@@ -472,6 +484,9 @@ python3 pipeline.py scrape <cp> <commune>          # Scraping seul
 python3 pipeline.py transform <cp> <commune>       # Transform seul (stg_* déjà rempli)
 python3 pipeline.py run <cp> <commune>             # Scrape + transform
 python3 pipeline.py reset <cp>                     # Réinitialise données d'une zone
+python3 pipeline.py enrich                         # Enrichit les entités avec données SIRENE
+python3 pipeline.py enrich --all                   # Ré-enrichit même les déjà traités
+python3 pipeline.py enrich --dry-run               # Affiche sans écrire en base
 ```
 
 ### Dashboard

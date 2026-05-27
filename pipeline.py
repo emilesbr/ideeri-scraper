@@ -8,6 +8,7 @@ Usage :
   python3 pipeline.py transform <cp> <commune>
   python3 pipeline.py run <cp> <commune> [--sl-code AD08FRXXXXX]
   python3 pipeline.py reset <cp>
+  python3 pipeline.py enrich [--all] [--dry-run]
 """
 
 import argparse, json, math, os, re, sys, time, unicodedata
@@ -477,6 +478,18 @@ def cmd_run(cp: str, commune: str, sl_code: str | None = None,
         return
     print()
     cmd_transform(cp, commune)
+
+    print(f"\n  Enrichissement SIRENE des nouvelles entités...")
+    try:
+        from enrich_sirene import enrich
+        n = enrich(quiet=True)
+        if n:
+            _ok(f"{n} nouvelles entités enrichies via SIRENE")
+        else:
+            print(f"  Aucune nouvelle entité à enrichir")
+    except Exception as e:
+        _warn(f"Enrichissement SIRENE non bloquant : {e}")
+
     print(f"\n  {B}Durée totale : {int(time.time() - t0)}s{RST}")
 
 
@@ -518,6 +531,16 @@ def cmd_reset(cp: str):
 
 
 # ---------------------------------------------------------------------------
+# enrich
+# ---------------------------------------------------------------------------
+
+def cmd_enrich(refresh: bool = False, dry_run: bool = False):
+    print(f"\n{B}=== Enrichissement SIRENE ==={RST}\n")
+    from enrich_sirene import enrich
+    enrich(refresh=refresh, dry_run=dry_run)
+
+
+# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 
@@ -555,6 +578,10 @@ def main():
     p = sub.add_parser("reset", help="Réinitialise le matching d'un code postal")
     p.add_argument("cp")
 
+    p = sub.add_parser("enrich", help="Enrichit les entités via l'API SIRENE")
+    p.add_argument("--all",     action="store_true", help="Ré-enrichit même les déjà traités")
+    p.add_argument("--dry-run", action="store_true", dest="dry_run", help="Affiche sans écrire")
+
     args = parser.parse_args()
 
     {
@@ -564,6 +591,7 @@ def main():
         "transform": lambda: cmd_transform(args.cp, args.commune),
         "run":       lambda: cmd_run(args.cp, args.commune, getattr(args, "sl_code", None), getattr(args, "source", None)),
         "reset":     lambda: cmd_reset(args.cp),
+        "enrich":    lambda: cmd_enrich(getattr(args, "all", False), getattr(args, "dry_run", False)),
     }[args.cmd]()
 
 

@@ -252,6 +252,10 @@ def parse_seloger_ads(data_brute: dict) -> list[dict]:
             "promoteur" if pt == "DEVELOPER" else "agence"
         )
 
+        # Téléphone : phoneNumbers est une liste de chaînes (peut contenir "0x / 0y")
+        phone_raw = (prov.get("phoneNumbers") or [None])[0]
+        telephone = phone_raw.strip() if phone_raw else None
+
         # nb_pieces : hardFacts en priorité, legacyTracking.nb_rooms en fallback
         nb_pieces_raw = facts.get("numberOfRooms")
         try:
@@ -287,6 +291,7 @@ def parse_seloger_ads(data_brute: dict) -> list[dict]:
                 "siret":            siret,
                 "type":             type_e,
                 "profile_url":      prov.get("profileUrl"),
+                "telephone":        telephone,
                 "cp":               cp,
             },
         })
@@ -310,8 +315,19 @@ def upsert_entity(e: dict, scraped_at: str) -> str | None:
 
     sig = entity_signature(siren, type_e, nom, cp)
 
-    # Chercher entité existante
+    # Chercher entité existante par signature exacte
     existing = sb.table("entites").select("*").eq("signature", sig).execute().data
+
+    # Fallback : si pas de SIREN et que la signature est nom_*, chercher une entité
+    # existante avec le même nom_commercial qui, elle, possède un SIREN.
+    # Cas typique : SeLoger crée nom_NORMNAME car SIRET absent, mais LBC a déjà
+    # créé siren_XXXXXXXXX pour la même agence.
+    if not existing and sig.startswith("nom_"):
+        existing_by_name = sb.table("entites").select("*") \
+            .eq("nom_commercial", nom).not_.is_("siren", "null").execute().data
+        if existing_by_name:
+            existing = existing_by_name  # fusionner silencieusement
+
     if existing:
         row = existing[0]
         # Mise à jour des noms portails
@@ -326,6 +342,8 @@ def upsert_entity(e: dict, scraped_at: str) -> str | None:
             updates["sur_seloger"]           = True
             if e.get("profile_url"):
                 updates["seloger_profile_url"] = e["profile_url"]
+        if e.get("telephone") and not row.get("telephone"):
+            updates["telephone"] = e["telephone"]
         # Enrichissement SIRET
         if siret and not row.get("siret"):
             updates["siret"] = siret
@@ -348,8 +366,9 @@ def upsert_entity(e: dict, scraped_at: str) -> str | None:
         "siret":             siret,
         "sur_lbc":           source == "lbc",
         "sur_seloger":       source == "seloger",
-        "lbc_store_id":      e.get("store_id") if source == "lbc" else None,
+        "lbc_store_id":        e.get("store_id") if source == "lbc" else None,
         "seloger_profile_url": e.get("profile_url") if source == "seloger" else None,
+        "telephone":           e.get("telephone") if source == "seloger" else None,
         "codes_postaux":     [cp] if cp else [],
         "date_premiere_obs": scraped_at,
         "nb_annonces_actives": 0,
