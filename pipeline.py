@@ -57,7 +57,7 @@ def _fetch(pid: str, url: str, params: dict, timeout: int) -> dict:
         r = requests.get(SB_URL,
                          params={"api_key": os.environ["SCRAPINGBEE_KEY"], "url": url, **params},
                          timeout=timeout)
-        html = r.text
+        html = r.content.decode("utf-8", errors="replace")
         (DEBUG / f"{pid}.html").write_text(html, encoding="utf-8")
         return {"id": pid, "url": url, "status": r.status_code, "html": html,
                 "error": None, "elapsed": round(time.time() - t0, 1)}
