@@ -68,29 +68,31 @@ def zones():
         "pages_erreur_lbc, pages_erreur_sl, lbc_total_attendu, sl_total_attendu"
     ).order("scraped_at", desc=True).limit(500).execute().data
 
-    # CP → commune + nb_runs + dernier run
-    cp_commune: dict[str, str] = {}
-    cp_runs:    dict[str, int] = {}
-    cp_latest:  dict[str, dict] = {}
+    # Grouper par (cp, commune) — deux communes peuvent partager le même CP
+    zones_map: dict[tuple, dict] = {}
     for r in runs_rows:
-        cp = r.get("code_postal")
+        cp   = r.get("code_postal")
+        comm = (r.get("commune") or "").strip()
         if not cp:
             continue
-        cp_commune.setdefault(cp, r.get("commune") or cp)
-        cp_runs[cp] = cp_runs.get(cp, 0) + 1
-        if cp not in cp_latest:
-            cp_latest[cp] = r
+        key = (cp, comm)
+        if key not in zones_map:
+            zones_map[key] = {"cp": cp, "commune": comm, "nb_runs": 0, "latest": None}
+        zones_map[key]["nb_runs"] += 1
+        if zones_map[key]["latest"] is None:
+            zones_map[key]["latest"] = r
 
     result = []
-    for cp, commune in sorted(cp_commune.items()):
+    for (cp, commune), v in sorted(zones_map.items()):
         nb = sb.table("annonces").select("id_annonce", count="exact") \
-               .eq("code_postal", cp).eq("est_active", True).execute().count or 0
+               .eq("code_postal", cp).ilike("commune", commune) \
+               .eq("est_active", True).execute().count or 0
         result.append({
-            "cp":         cp,
-            "commune":    commune,
+            "cp":          cp,
+            "commune":     commune,
             "nb_annonces": nb,
-            "nb_runs":    cp_runs.get(cp, 0),
-            "run_status": _run_status(cp_latest.get(cp)),
+            "nb_runs":     v["nb_runs"],
+            "run_status":  _run_status(v["latest"]),
         })
     return jsonify(result)
 
@@ -117,8 +119,12 @@ def _zone_nb_mandats(cp: str, sb) -> int:
 @app.route("/api/zone/<cp>")
 def zone(cp):
     sb = _sb()
-    rows = sb.table("annonces").select("*").eq("code_postal", cp) \
-             .eq("est_active", True).execute().data
+    commune_filter = (request.args.get("commune") or "").strip() or None
+
+    q = sb.table("annonces").select("*").eq("code_postal", cp).eq("est_active", True)
+    if commune_filter:
+        q = q.ilike("commune", commune_filter)
+    rows = q.execute().data
 
     if not rows:
         return jsonify({"error": "zone inconnue"}), 404
@@ -206,16 +212,18 @@ def zone(cp):
                 })
     price_changes.sort(key=lambda x: x["date"], reverse=True)
 
-    # Dernier run
-    runs_rows = sb.table("runs").select("*").eq("code_postal", cp) \
-                  .order("scraped_at", desc=True).limit(5).execute().data
+    # Dernier run (filtré par commune si fournie)
+    rq = sb.table("runs").select("*").eq("code_postal", cp).order("scraped_at", desc=True).limit(5)
+    if commune_filter:
+        rq = rq.ilike("commune", commune_filter)
+    runs_rows = rq.execute().data
     last_run   = runs_rows[0]["scraped_at"][:16].replace("T", " ") if runs_rows else None
     run_status = _run_status(runs_rows[0] if runs_rows else None)
 
     return jsonify({
         # ── Identité ──
         "cp":         cp,
-        "commune":    rows[0].get("commune") or cp,
+        "commune":    commune_filter or rows[0].get("commune") or cp,
         "last_run":   last_run,
         "run_status": run_status,
 

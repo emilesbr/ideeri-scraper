@@ -420,13 +420,15 @@ async function loadZones() {
       list.innerHTML = '<div class="empty" style="color:#4a5568;padding:16px;font-size:11px">Aucune zone — lance un run</div>';
       return;
     }
-    list.innerHTML = zones.map(z => `
-      <div class="zone-item" id="zi-${z.cp}" onclick="selectZone('${z.cp}','${esc(z.commune)}')">
-        <div class="cp">${z.cp}</div>
-        <div class="zname">${z.commune}</div>
+    list.innerHTML = zones.map(z => {
+      const zid = zoneId(z.cp, z.commune);
+      return `
+      <div class="zone-item" id="zi-${zid}" onclick="selectZone('${z.cp}','${esc(z.commune)}')">
+        <div class="cp">${z.cp} <span style="font-weight:400;font-size:11px;color:#718096">${z.commune}</span></div>
         <div class="zmeta">${z.nb_annonces} ann. · ${z.nb_runs} run${z.nb_runs>1?'s':''}</div>
         ${_runStatusHtml(z.run_status)}
-      </div>`).join('');
+      </div>`;
+    }).join('');
   } catch(e) {
     document.getElementById('zones-list').innerHTML = `
       <div style="padding:14px 16px">
@@ -436,16 +438,21 @@ async function loadZones() {
   }
 }
 
+function zoneId(cp, commune) {
+  return `${cp}-${(commune||'').replace(/[^a-zA-Z0-9]/g,'_')}`;
+}
+
 // ── Vue zone ─────────────────────────────────────────────────────────────────
 async function selectZone(cp, commune) {
   currentCp = cp; currentCommune = commune;
   document.querySelectorAll('.zone-item').forEach(el => el.classList.remove('active'));
-  const zi = document.getElementById('zi-'+cp);
+  const zi = document.getElementById('zi-'+zoneId(cp, commune));
   if (zi) zi.classList.add('active');
   document.getElementById('main').innerHTML =
     '<div class="empty" style="margin-top:120px">Chargement…</div>';
   try {
-    zoneData = await apiFetch('/zone/'+cp);
+    const params = commune ? `?commune=${encodeURIComponent(commune)}` : '';
+    zoneData = await apiFetch('/zone/'+cp+params);
     sortCol = 'mandats'; sortAsc = false;
     renderZone();
   } catch(e) {
