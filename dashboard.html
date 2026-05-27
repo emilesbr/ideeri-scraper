@@ -407,7 +407,11 @@ async function startRetry() {
   };
 
   try {
-    const resp = await fetch(`${API}/retry/${retryCurrentCp}?wait=${wait}`, { method: 'POST' });
+    const resp = await fetch(`${API}/retry/${retryCurrentCp}?wait=${wait}`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({commune: retryCurrentCommune})
+    });
     const reader = resp.body.getReader(), decoder = new TextDecoder();
     let buf = '';
     while (true) {

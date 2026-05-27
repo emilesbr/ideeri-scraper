@@ -558,8 +558,12 @@ def retry_zone(cp):
         wait = 6000
     if wait not in (6000, 8000, 10000):
         wait = 6000
+    commune = (request.json or {}).get("commune", "").strip() or None
 
-    cmd = [sys.executable, "pipeline.py", "retry", cp, "--wait", str(wait)]
+    cmd = [sys.executable, "pipeline.py", "retry", cp]
+    if commune:
+        cmd.append(commune)
+    cmd += ["--wait", str(wait)]
 
     def generate():
         proc = subprocess.Popen(
