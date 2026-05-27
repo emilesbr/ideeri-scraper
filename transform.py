@@ -129,12 +129,14 @@ def parse_lbc_ads(data_brute: dict) -> list[dict]:
         except ValueError:
             surface = None
 
-        # Type de bien — real_estate_type attr en priorité (1=maison, 2=appartement)
+        # Type de bien — real_estate_type attr : 1=maison, 2=appartement, autres=non résidentiel
         rt = _lbc_attr(a, "real_estate_type")
         if rt == "1":
             type_bien = "maison"
         elif rt == "2":
             type_bien = "appartement"
+        elif rt is not None:
+            continue  # terrain, parking, bureau… — on ignore
         else:
             subj = a.get("subject", "").lower()
             type_bien = "maison" if ("maison" in subj or "villa" in subj) else "appartement"
