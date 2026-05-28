@@ -484,10 +484,14 @@ def cmd_status(cp: str):
 def _save_scrape_state(cp: str, commune: str, lbc_base: str | None, sl_base: str | None,
                        lbc_pages: int, sl_pages: int,
                        err_lbc: list[int], err_sl: list[int]) -> None:
+    err_lbc_set = set(err_lbc)
+    err_sl_set  = set(err_sl)
     state = {
         "commune": commune, "cp": cp,
         "lbc_base": lbc_base, "sl_base": sl_base,
         "lbc_pages": lbc_pages, "sl_pages": sl_pages,
+        "lbc_scraped": [p for p in range(1, lbc_pages + 1) if p not in err_lbc_set],
+        "sl_scraped":  [p for p in range(1, sl_pages  + 1) if p not in err_sl_set],
         "pages_erreur_lbc": sorted(err_lbc),
         "pages_erreur_sl":  sorted(err_sl),
         "scraped_at": datetime.now(timezone.utc).isoformat(),
@@ -804,6 +808,10 @@ def cmd_retry(cp: str, commune: str | None = None, wait_override: int | None = N
     # Mettre à jour l'état
     state["pages_erreur_lbc"] = still_err_lbc
     state["pages_erreur_sl"]  = still_err_sl
+    lbc_pages = state.get("lbc_pages", 0)
+    sl_pages  = state.get("sl_pages",  0)
+    state["lbc_scraped"] = [p for p in range(1, lbc_pages + 1) if p not in set(still_err_lbc)]
+    state["sl_scraped"]  = [p for p in range(1, sl_pages  + 1) if p not in set(still_err_sl)]
     state_file.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
 
     recovered = len(err_lbc) - len(still_err_lbc) + len(err_sl) - len(still_err_sl)
