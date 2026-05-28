@@ -577,16 +577,18 @@ def zone_state(cp):
 
     lbc_base = state.get("lbc_base", "")
 
-    # Pages effectivement scrapées (depuis les tables stg)
-    lbc_scraped: list[int] = []
-    sl_scraped:  list[int] = []
+    # Pages scrapées : priorité au scrape_state (source de vérité), fallback stg_*
+    lbc_scraped: list[int] = state.get("lbc_scraped") or []
+    sl_scraped:  list[int] = state.get("sl_scraped")  or []
     last_run: dict | None = None
     try:
         sb = _sb()
-        lbc_rows = sb.table("stg_lbc").select("page").eq("code_postal", cp).execute().data
-        sl_rows  = sb.table("stg_seloger").select("page").eq("code_postal", cp).execute().data
-        lbc_scraped = sorted(set(r["page"] for r in lbc_rows if r.get("page")))
-        sl_scraped  = sorted(set(r["page"] for r in sl_rows  if r.get("page")))
+        if not lbc_scraped:
+            lbc_rows = sb.table("stg_lbc").select("page").eq("code_postal", cp).execute().data
+            lbc_scraped = sorted(set(r["page"] for r in lbc_rows if r.get("page")))
+        if not sl_scraped:
+            sl_rows = sb.table("stg_seloger").select("page").eq("code_postal", cp).execute().data
+            sl_scraped = sorted(set(r["page"] for r in sl_rows if r.get("page")))
         runs_data = sb.table("runs").select("scraped_at,statut,nb_annonces_trouvees") \
                       .eq("code_postal", cp).order("scraped_at", desc=True).limit(1).execute().data
         if runs_data:
