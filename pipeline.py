@@ -53,7 +53,7 @@ def _state_file(cp: str, commune: str) -> Path:
 
 SB_URL     = "https://app.scrapingbee.com/api/v1/"
 SL_PARAMS  = {"render_js": "false", "premium_proxy": "true", "country_code": "fr"}
-LBC_PARAMS = {"render_js": "true",  "premium_proxy": "true", "wait": "6000", "block_resources": "true"}
+LBC_PARAMS = {"render_js": "true", "stealth_proxy": "true", "wait": "6000", "block_resources": "false", "country_code": "fr"}
 DEBUG      = Path(__file__).parent / "debug"
 DEBUG.mkdir(exist_ok=True)
 
@@ -103,22 +103,22 @@ def _upload_html(filepath: Path) -> None:
     threading.Thread(target=_do, daemon=True).start()
 
 
-_LBC_STEALTH_PARAMS = {"render_js": "true", "stealth_proxy": "true", "wait": "6000",
-                       "block_resources": "false", "country_code": "fr"}
+_LBC_PREMIUM_PARAMS = {"render_js": "true", "premium_proxy": "true", "wait": "6000",
+                       "block_resources": "true", "country_code": "fr"}
 
 
 def _fetch(pid: str, url: str, params: dict, timeout: int) -> dict:
     """Fetche une URL via ScrapingBee. Backoff automatique sur HTTP 500 (wait +2000ms, 4 retries max).
-    Si LBC retourne un code 613 (Datadome block sur premium proxy), bascule sur stealth_proxy."""
+    Démarre en stealth_proxy pour LBC ; si 613, bascule sur premium_proxy."""
     t0 = time.time()
     current_params = dict(params)
     max_attempts = 5 if "wait" in params else 1
-    stealth_fallback = False
+    premium_fallback = False
 
     for attempt in range(max_attempts):
         if attempt > 0:
             extra = attempt * 2000
-            base_wait = _LBC_STEALTH_PARAMS["wait"] if stealth_fallback else params["wait"]
+            base_wait = _LBC_PREMIUM_PARAMS["wait"] if premium_fallback else params["wait"]
             current_params["wait"] = str(int(base_wait) + extra)
             pause = attempt * 15
             print(f"    ↩ retry {attempt} dans {pause}s (wait={current_params['wait']}ms)...", end=" ", flush=True)
@@ -136,11 +136,11 @@ def _fetch(pid: str, url: str, params: dict, timeout: int) -> dict:
             if r.status_code == 200:
                 return {"id": pid, "url": url, "status": 200, "html": html,
                         "error": None, "elapsed": round(time.time() - t0, 1)}
-            # 613 = Datadome block sur premium proxy → bascule stealth pour les tentatives suivantes
-            if r.status_code == 500 and "Server responded with 613" in html and not stealth_fallback:
-                stealth_fallback = True
-                current_params = dict(_LBC_STEALTH_PARAMS)
-                print(f"    ⚡ 613 → stealth", end=" ", flush=True)
+            # 613 = Datadome block sur stealth proxy → bascule premium pour les tentatives suivantes
+            if r.status_code == 500 and "Server responded with 613" in html and not premium_fallback:
+                premium_fallback = True
+                current_params = dict(_LBC_PREMIUM_PARAMS)
+                print(f"    ⚡ 613 → premium", end=" ", flush=True)
             if attempt == max_attempts - 1:
                 return {"id": pid, "url": url, "status": r.status_code, "html": html,
                         "error": None, "elapsed": round(time.time() - t0, 1)}
