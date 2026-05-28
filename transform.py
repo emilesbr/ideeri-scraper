@@ -8,6 +8,7 @@ et alimente annonces + entites. Journalise chaque run dans la table runs.
 """
 
 import os, re, sys, json, time, hashlib, unicodedata, lzstring
+from pathlib import Path
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 from supabase import create_client
@@ -737,6 +738,24 @@ def cross_entity_match(code_postal: str, commune: str = "") -> dict:
 # Main
 # ---------------------------------------------------------------------------
 
+def _load_commune_officielle(code_postal: str, commune: str) -> str:
+    """Lit commune_officielle depuis le scrape_state si disponible."""
+    here = Path(__file__).parent / "debug"
+    slug = re.sub(r"[^a-z0-9]+", "_",
+                  "".join(c for c in unicodedata.normalize("NFKD", commune.lower())
+                          if not unicodedata.combining(c))).strip("_")
+    sf = here / f"scrape_state_{code_postal}_{slug}.json"
+    if not sf.exists():
+        candidates = sorted(here.glob(f"scrape_state_{code_postal}_*.json"))
+        sf = candidates[0] if candidates else None
+    if sf and sf.exists():
+        try:
+            return json.loads(sf.read_text(encoding="utf-8")).get("commune_officielle") or commune
+        except Exception:
+            pass
+    return commune
+
+
 def run_transform(code_postal: str, commune: str = "",
                   pages_erreur_lbc: list[int] | None = None,
                   pages_erreur_sl:  list[int] | None = None,
@@ -744,6 +763,7 @@ def run_transform(code_postal: str, commune: str = "",
                   sl_total_attendu:  int | None = None) -> None:
     t0 = time.time()
     scraped_at = datetime.now(timezone.utc).isoformat()
+    commune_officielle = _load_commune_officielle(code_postal, commune)
     print(f"\n=== Transform {code_postal} {commune} ===")
 
     # Créer le run avec statut 'running' — mis à jour à la fin
@@ -789,6 +809,10 @@ def run_transform(code_postal: str, commune: str = "",
             for row in rows:
                 raw = row.get("data_brute", {})
                 ads = parser(raw)
+                # Normalise commune LBC ("Lyon" → "Lyon 1er arrondissement")
+                if source == "lbc":
+                    for ann in ads:
+                        ann["commune"] = commune_officielle
                 print(f"    page {raw.get('_meta',{}).get('page','?')} → {len(ads)} annonces")
 
                 for ann in ads:

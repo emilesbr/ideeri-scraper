@@ -192,7 +192,8 @@ def _parse_seloger(html: str) -> tuple[list, dict, int]:
 # Helpers URL + insertion stg_*
 # ---------------------------------------------------------------------------
 
-def _geocode(commune: str, cp: str) -> tuple[float, float] | None:
+def _geocode(commune: str, cp: str) -> dict | None:
+    """Retourne {lat, lon, commune_officielle, code_insee} depuis api-adresse.data.gouv.fr."""
     try:
         r = requests.get(
             "https://api-adresse.data.gouv.fr/search/",
@@ -204,8 +205,14 @@ def _geocode(commune: str, cp: str) -> tuple[float, float] | None:
         features = r.json().get("features", [])
         if not features:
             return None
-        lon, lat = features[0]["geometry"]["coordinates"]
-        return lat, lon
+        feat = features[0]
+        lon, lat = feat["geometry"]["coordinates"]
+        props = feat.get("properties", {})
+        return {
+            "lat": lat, "lon": lon,
+            "commune_officielle": props.get("city", commune),
+            "code_insee": props.get("citycode", ""),
+        }
     except Exception:
         return None
 
@@ -231,9 +238,9 @@ def _lbc_base(commune: str, cp: str, lbc_loc: str | None = None) -> str:
         )
     # Garder les accents — LBC en a besoin pour identifier la commune (Vérin ≠ Verin)
     slug = _urlquote(commune, safe="-")
-    coords = _geocode(commune, cp)
-    if coords:
-        lat, lon = coords
+    geo = _geocode(commune, cp)
+    if geo:
+        lat, lon = geo["lat"], geo["lon"]
         return (
             "https://www.leboncoin.fr/recherche"
             "?category=9"
@@ -483,11 +490,15 @@ def cmd_status(cp: str):
 
 def _save_scrape_state(cp: str, commune: str, lbc_base: str | None, sl_base: str | None,
                        lbc_pages: int, sl_pages: int,
-                       err_lbc: list[int], err_sl: list[int]) -> None:
+                       err_lbc: list[int], err_sl: list[int],
+                       commune_officielle: str | None = None,
+                       code_insee: str | None = None) -> None:
     err_lbc_set = set(err_lbc)
     err_sl_set  = set(err_sl)
     state = {
         "commune": commune, "cp": cp,
+        "commune_officielle": commune_officielle or commune,
+        "code_insee": code_insee or "",
         "lbc_base": lbc_base, "sl_base": sl_base,
         "lbc_pages": lbc_pages, "sl_pages": sl_pages,
         "lbc_scraped": [p for p in range(1, lbc_pages + 1) if p not in err_lbc_set],
@@ -506,6 +517,10 @@ def cmd_scrape(cp: str, commune: str, sl_code: str | None = None,
     do_sl  = source in (None, "seloger")
     do_lbc = source in (None, "lbc")
     sb       = _sb()
+    # Géocodage : lat/lon + nom officiel INSEE pour normalisation commune LBC
+    geo = _geocode(commune, cp) if not lbc_loc else None
+    commune_officielle = geo["commune_officielle"] if geo else commune
+    code_insee         = geo["code_insee"]         if geo else ""
     lbc_base = _lbc_base(commune, cp, lbc_loc)
     sl_base  = _sl_base(sl_code if sl_code else cp)
 
@@ -636,7 +651,8 @@ def cmd_scrape(cp: str, commune: str, sl_code: str | None = None,
     _save_scrape_state(cp, commune,
                        lbc_base if do_lbc else None,
                        sl_base  if do_sl  else None,
-                       lbc_pages, sl_pages, err_lbc, err_sl)
+                       lbc_pages, sl_pages, err_lbc, err_sl,
+                       commune_officielle, code_insee)
 
     print(f"\n  {B}Résultat scraping :{RST}")
     if do_lbc:
