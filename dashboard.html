@@ -119,8 +119,7 @@ tr:hover td { background: #fafbfc; cursor: pointer; }
 .dimmed { color: #cbd5e0; }
 .api-err { background: #fee2e2; color: #991b1b; border-radius: 8px; padding: 12px 16px;
            font-size: 13px; margin: 20px; }
-.alert-item { padding: 9px 18px; cursor: pointer; border-left: 3px solid #e53e3e;
-              background: #1a1010; transition: background .12s; }
+.alert-item { border-left: 3px solid #e53e3e; background: #1a1010; transition: background .12s; }
 .alert-item:hover { background: #2d1515; }
 .alert-item .a-cp   { font-weight: 600; font-size: 12px; color: #fc8181; }
 .alert-item .a-info { font-size: 10px; color: #fc8181; opacity: .7; margin-top: 2px; }
@@ -174,17 +173,30 @@ tr:hover td { background: #fafbfc; cursor: pointer; }
 .mini-dot.running { background: #ed8936; animation: pulse 1.4s ease-in-out infinite; }
 .mini-dot.done    { background: #48bb78; }
 .mini-dot.error   { background: #fc8181; }
+#zones-scroll { flex: 1; overflow-y: auto; min-height: 0; }
+.sb-run-indicator { padding: 10px 18px; cursor: pointer; display: flex; align-items: center;
+                   gap: 8px; font-size: 12px; font-weight: 500; transition: background .12s; }
+.sb-run-indicator.running { background: #2d2416; color: #ed8936; border-left: 3px solid #ed8936; }
+.sb-run-indicator.done    { background: #1a2e20; color: #68d391; border-left: 3px solid #48bb78; }
+.sb-run-indicator.error   { background: #2d1515; color: #fc8181; border-left: 3px solid #fc8181; }
+.sb-run-indicator:hover   { filter: brightness(1.2); }
 </style>
 </head>
 <body>
 <div class="app">
   <aside class="sidebar">
     <div class="sb-head">Ide<em>eri</em></div>
-    <div class="sb-section">Zones</div>
-    <div id="zones-list"><div class="empty" style="color:#4a5568;padding:20px;font-size:11px">Chargement…</div></div>
-    <div id="alerts-section" style="display:none">
-      <div class="sb-section-alert">⚠ Incomplets</div>
-      <div id="alerts-list"></div>
+    <div id="sb-running" class="sb-run-indicator running" style="display:none" onclick="restoreFromMini()">
+      <span class="mini-dot running" id="sb-dot"></span>
+      <span id="sb-running-text">Run en cours…</span>
+    </div>
+    <div id="zones-scroll">
+      <div class="sb-section">Zones</div>
+      <div id="zones-list"><div class="empty" style="color:#4a5568;padding:20px;font-size:11px">Chargement…</div></div>
+      <div id="alerts-section" style="display:none">
+        <div class="sb-section-alert">⚠ Incomplets</div>
+        <div id="alerts-list"></div>
+      </div>
     </div>
     <div class="sb-add" onclick="openRunModal()">+ Nouvelle zone</div>
   </aside>
@@ -279,10 +291,17 @@ let _miniTarget = null;
 function minimizeModal(target) {
   _miniTarget = target;
   document.getElementById('run-overlay').classList.remove('open');
-  const title = _runMode === 'existing'
-    ? `Run — ${_runCommune} ${_runCp}`
-    : `Run — ${(document.getElementById('r-commune').value||'').trim() || '…'} ${(document.getElementById('r-cp').value||'').trim()}`;
-  document.getElementById('mini-title').textContent  = title;
+  const label = _runMode === 'existing'
+    ? `${_runCommune} ${_runCp}`
+    : `${(document.getElementById('r-commune').value||'').trim() || '…'} ${(document.getElementById('r-cp').value||'').trim()}`;
+  // Sidebar indicator
+  const sb = document.getElementById('sb-running');
+  sb.className = 'sb-run-indicator running';
+  sb.style.display = 'flex';
+  document.getElementById('sb-dot').className = 'mini-dot running';
+  document.getElementById('sb-running-text').textContent = `Run en cours — ${label}`;
+  // Mini-bar (secondaire)
+  document.getElementById('mini-title').textContent  = `Run — ${label}`;
   document.getElementById('mini-status').innerHTML   = '<span class="mini-dot running" id="mini-dot"></span>En cours…';
   document.getElementById('mini-bar').style.display  = 'block';
 }
@@ -295,16 +314,22 @@ function restoreFromMini() {
 
 function closeMini() {
   document.getElementById('mini-bar').style.display = 'none';
+  document.getElementById('sb-running').style.display = 'none';
   _miniTarget = null;
 }
 
 function _miniDone(ok) {
+  // Mini-bar
   const dot = document.getElementById('mini-dot');
-  if (dot) { dot.className = `mini-dot ${ok ? 'done' : 'error'}`; }
+  if (dot) dot.className = `mini-dot ${ok ? 'done' : 'error'}`;
   const txt = document.getElementById('mini-status');
-  if (txt) {
-    const label = ok ? '✓ Terminé — cliquer pour voir' : '✗ Erreur';
-    txt.innerHTML = `<span class="mini-dot ${ok?'done':'error'}"></span>${label}`;
+  if (txt) txt.innerHTML = `<span class="mini-dot ${ok?'done':'error'}"></span>${ok ? '✓ Terminé — cliquer pour voir' : '✗ Erreur'}`;
+  // Sidebar indicator
+  const sb = document.getElementById('sb-running');
+  if (sb && sb.style.display !== 'none') {
+    sb.className = `sb-run-indicator ${ok ? 'done' : 'error'}`;
+    document.getElementById('sb-dot').className = `mini-dot ${ok ? 'done' : 'error'}`;
+    document.getElementById('sb-running-text').textContent = ok ? '✓ Terminé — cliquer pour voir' : '✗ Erreur — cliquer pour voir';
   }
 }
 
@@ -336,12 +361,27 @@ async function loadAlerts() {
       if (a.pages_erreur_sl?.length)  parts.push(`SL p${a.pages_erreur_sl.join(',')}`);
       if (a.statut === 'error')   parts.push('transform crashé');
       if (a.statut === 'running') parts.push('bloqué en running');
-      return `<div class="alert-item" onclick="openRunModal('${a.cp}','${esc(a.commune)}')">
-        <div class="a-cp">${a.cp} ${a.commune}</div>
-        <div class="a-info">${parts.join(' · ') || 'incomplet'}</div>
+      return `<div class="alert-item" style="display:flex;align-items:flex-start;gap:0">
+        <div style="flex:1;padding:9px 0 9px 18px;cursor:pointer" onclick="openRunModal('${a.cp}','${esc(a.commune)}')">
+          <div class="a-cp">${a.cp} ${a.commune}</div>
+          <div class="a-info">${parts.join(' · ') || 'incomplet'}</div>
+        </div>
+        <button onclick="event.stopPropagation();dismissAlert('${a.cp}','${esc(a.commune)}')"
+                style="background:none;border:none;color:#fc8181;cursor:pointer;padding:8px 12px;font-size:18px;line-height:1;opacity:.45;flex-shrink:0;align-self:center"
+                title="Masquer">×</button>
       </div>`;
     }).join('');
   } catch(e) { /* silencieux si l'API n'est pas dispo */ }
+}
+
+async function dismissAlert(cp, commune) {
+  try {
+    await fetch(`${API}/zone/${cp}/accept-incomplete`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({commune})
+    });
+    loadAlerts();
+  } catch(e) { /* silencieux */ }
 }
 
 // ── Run modal (unifié : nouvelle zone + relancer existante) ──────────────────
@@ -566,6 +606,9 @@ async function acceptRunIncomplete() {
 function closeRunModal() {
   document.getElementById('run-overlay').classList.remove('open');
   document.getElementById('run-minimize-btn').style.display = 'none';
+  document.getElementById('sb-running').style.display = 'none';
+  document.getElementById('mini-bar').style.display = 'none';
+  _miniTarget = null;
 }
 
 // ── Sidebar ─────────────────────────────────────────────────────────────────
