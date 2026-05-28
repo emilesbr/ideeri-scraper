@@ -595,8 +595,11 @@ def cmd_scrape(cp: str, commune: str, sl_code: str | None = None,
     ok_lbc    = 1 if r_lbc["status"] == 200 else 0
 
     if tasks:
-        print(f"\n  Scraping {len(tasks)} pages restantes (max 5 concurrent)...\n")
-        with ThreadPoolExecutor(max_workers=5) as ex:
+        # LBC est sensible à Datadome en parallèle — limiter à 2 workers quand LBC présent
+        has_lbc = any(s == "lbc" for s, *_ in tasks)
+        max_w = 2 if has_lbc else 5
+        print(f"\n  Scraping {len(tasks)} pages restantes (max {max_w} concurrent)...\n")
+        with ThreadPoolExecutor(max_workers=max_w) as ex:
             fmap = {
                 ex.submit(_fetch, f"{src}_{cp}_p{p}", url, params, timeout): (src, p, url)
                 for src, p, url, params, timeout in tasks
@@ -773,7 +776,8 @@ def cmd_retry(cp: str, commune: str | None = None, wait_override: int | None = N
                 return {"id": pid, "url": url, "status": 200, "html": html, "error": None, "elapsed": 0}
         return _fetch(pid + "_retry", url, params, to)
 
-    with ThreadPoolExecutor(max_workers=5) as ex:
+    has_lbc = any(s == "lbc" for s, *_ in tasks)
+    with ThreadPoolExecutor(max_workers=2 if has_lbc else 5) as ex:
         fmap = {
             ex.submit(_fetch_or_cache, src, p, url, params, to): (src, p, url)
             for src, p, url, params, to in tasks
