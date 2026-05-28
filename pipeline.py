@@ -638,11 +638,19 @@ def cmd_scrape(cp: str, commune: str, sl_code: str | None = None,
                 continue
             if src == "seloger":
                 ids, raw, _ = _parse_seloger(r["html"])
+                if not ids:
+                    err_sl.append(p)
+                    print(f"  {Y}⚠  seloger p{p} | HTTP 200 mais 0 annonces (Datadome ?){RST}")
+                    continue
                 _insert_stg("stg_seloger", commune, cp, p, url, raw, len(ids), sb)
                 total_sl += len(ids)
                 ok_sl    += 1
             else:
                 ads, raw, _ = _parse_lbc(r["html"])
+                if not ads:
+                    err_lbc.append(p)
+                    print(f"  {Y}⚠  lbc     p{p} | HTTP 200 mais 0 annonces (Datadome ?){RST}")
+                    continue
                 _insert_stg("stg_lbc", commune, cp, p, url, raw, len(ads), sb)
                 total_lbc += len(ads)
                 ok_lbc    += 1
@@ -814,10 +822,16 @@ def cmd_retry(cp: str, commune: str | None = None, wait_override: int | None = N
 
             if src == "lbc":
                 ads, raw, _ = _parse_lbc(r["html"])
+                if not ads:
+                    print(f"  {Y}⚠  lbc     p{p} | HTTP 200 mais 0 annonces (Datadome ?){RST}")
+                    continue
                 _insert_stg("stg_lbc",     commune, cp, p, url, raw, len(ads), sb)
                 still_err_lbc = [x for x in still_err_lbc if x != p]
             else:
                 ids, raw, _ = _parse_seloger(r["html"])
+                if not ids:
+                    print(f"  {Y}⚠  seloger p{p} | HTTP 200 mais 0 annonces (Datadome ?){RST}")
+                    continue
                 _insert_stg("stg_seloger", commune, cp, p, url, raw, len(ids), sb)
                 still_err_sl = [x for x in still_err_sl if x != p]
 
