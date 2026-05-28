@@ -787,6 +787,8 @@ function showHome() {
   document.querySelectorAll('.zone-item').forEach(el => el.classList.remove('active'));
   document.getElementById('zone-content').style.display = 'none';
   document.getElementById('home-view').style.display = 'block';
+  const overlay = document.getElementById('run-overlay');
+  if (overlay) overlay.style.display = 'none';
   if (_map) setTimeout(() => _map.invalidateSize(), 50);
 }
 
