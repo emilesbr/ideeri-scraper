@@ -229,6 +229,7 @@ tr:hover td { background: #fafbfc; cursor: pointer; }
         <span>Entités</span><span class="sb-arrow" id="sarrow-entites">▾</span>
       </div>
       <div class="sb-panel-body" id="sbody-entites">
+        <div id="sb-selected-entites"></div>
         <div class="sb-search" style="position:relative">
           <input id="entite-search-input" type="text" placeholder="Nom de l'agence…"
                  autocomplete="off" oninput="onEntiteSearch(this.value)">
@@ -937,6 +938,33 @@ function _renderEntiteSearchList(results) {
   }).join('');
 }
 
+function _renderSelectedEntites() {
+  const box = document.getElementById('sb-selected-entites');
+  if (!box) return;
+  if (!_selectedEntites.size) { box.innerHTML = ''; return; }
+  box.innerHTML = [..._selectedEntites.entries()].map(([nom, {colorIdx}]) => {
+    const color = _entiteColorScale(colorIdx, 1);
+    return `<div style="display:flex;align-items:center;gap:0;border-left:3px solid ${color};
+                 background:#1e2736;padding:7px 10px 7px 14px">
+      <span style="display:inline-block;width:8px;height:8px;border-radius:50%;
+             background:${color};flex-shrink:0;margin-right:8px"></span>
+      <span style="flex:1;font-size:12px;font-weight:600;color:#e2e8f0;
+             white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${nom}">${nom}</span>
+      <button onclick="deselEntite('${esc(nom)}')"
+        style="background:none;border:none;color:#4a5568;cursor:pointer;
+               font-size:15px;line-height:1;padding:0 4px;flex-shrink:0">×</button>
+    </div>`;
+  }).join('');
+}
+
+function deselEntite(nom) {
+  _selectedEntites.delete(nom);
+  _renderSelectedEntites();
+  _renderEntiteSearchList(_entiteResults);
+  if (_selectedEntites.size === 0) { _initMap(); return; }
+  _renderMultiEntiteMap();
+}
+
 async function toggleEntite(idx) {
   const e = _entiteResults[idx];
   if (_selectedEntites.has(e.nom)) {
@@ -948,6 +976,7 @@ async function toggleEntite(idx) {
       _selectedEntites.set(e.nom, { entity: e, zones: data.zones || [], colorIdx });
     } catch(_) { return; }
   }
+  _renderSelectedEntites();
   _renderEntiteSearchList(_entiteResults);
   showHome();
   if (_selectedEntites.size === 0) { _initMap(); return; }
@@ -960,6 +989,7 @@ function clearEntiteSearch() {
   document.getElementById('entite-search-input').value = '';
   document.getElementById('sb-entite-results').innerHTML = '';
   document.getElementById('entite-search-clear').style.display = 'none';
+  _renderSelectedEntites();
   _initMap();
 }
 
