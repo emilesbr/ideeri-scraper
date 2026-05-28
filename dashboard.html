@@ -247,6 +247,7 @@ tr:hover td { background: #fafbfc; cursor: pointer; }
         <span id="zone-section-label">Zones</span><span class="sb-arrow" id="sarrow-zones">▾</span>
       </div>
       <div class="sb-panel-body" id="sbody-zones">
+        <div id="sb-selected-zones"></div>
         <div class="sb-search">
           <input type="text" id="zone-search" placeholder="CP ou ville…" oninput="filterZones(this.value)" autocomplete="off">
         </div>
@@ -359,6 +360,7 @@ let currentCommune = '';
 let sortCol = 'mandats';
 let sortAsc = false;
 let zoneData = null;
+let _selectedZones = new Map(); // key: cp+'_'+commune → {cp, commune, data}
 
 let _runMode = 'new'; // 'new' | 'existing'
 let _runCp = '', _runCommune = '';
@@ -845,6 +847,8 @@ function _mapColor(t) {
 
 function showHome() {
   currentCp = ''; currentCommune = '';
+  _selectedZones.clear();
+  _renderSelectedZones();
   document.querySelectorAll('.zone-item').forEach(el => el.classList.remove('active'));
   document.getElementById('zone-content').style.display = 'none';
   document.getElementById('home-view').style.display = 'block';
@@ -1077,9 +1081,11 @@ function filterZones(query) {
     return;
   }
   list.innerHTML = filtered.map(z => {
-    const zid = zoneId(z.cp, z.commune);
-    const active = currentCp === z.cp && currentCommune === z.commune ? ' active' : '';
-    return `<div class="zone-item${active}" id="zi-${zid}" onclick="selectZone('${z.cp}','${esc(z.commune)}')">
+    const zid    = zoneId(z.cp, z.commune);
+    const active = _selectedZones.has(_zoneKey(z.cp, z.commune)) ? ' active' : '';
+    return `<div class="zone-item${active}" id="zi-${zid}"
+               data-cp="${z.cp}" data-commune="${esc(z.commune)}"
+               onclick="selectZone('${z.cp}','${esc(z.commune)}')">
       <div class="cp">${z.cp} <span style="font-weight:400;font-size:11px;color:#718096">${z.commune}</span></div>
       <div class="zmeta">${z.nb_annonces} ann. · ${z.nb_runs} run${z.nb_runs>1?'s':''}</div>
       ${_runStatusHtml(z.run_status)}
@@ -1092,24 +1098,166 @@ function zoneId(cp, commune) {
 }
 
 // ── Vue zone ─────────────────────────────────────────────────────────────────
+function _zoneKey(cp, commune) { return `${cp}_${commune}`; }
+
+function _renderSelectedZones() {
+  const box = document.getElementById('sb-selected-zones');
+  if (!box) return;
+  if (!_selectedZones.size) { box.innerHTML = ''; return; }
+  const colors = ['#63b3ed','#68d391','#f6ad55','#fc8181','#b794f4','#76e4f7'];
+  box.innerHTML = [..._selectedZones.values()].map(({cp, commune}, i) => {
+    const color = colors[i % colors.length];
+    return `<div style="display:flex;align-items:center;border-left:3px solid ${color};
+                 background:#1e2736;padding:7px 10px 7px 14px;gap:0">
+      <span style="display:inline-block;width:8px;height:8px;border-radius:50%;
+             background:${color};flex-shrink:0;margin-right:8px"></span>
+      <span style="flex:1;font-size:12px;font-weight:600;color:#e2e8f0;
+             white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer"
+             onclick="selectZone('${cp}','${esc(commune)}')">${commune} <span style="color:#718096;font-weight:400">${cp}</span></span>
+      <button onclick="deselZone('${cp}','${esc(commune)}')"
+        style="background:none;border:none;color:#4a5568;cursor:pointer;
+               font-size:15px;line-height:1;padding:0 4px;flex-shrink:0">×</button>
+    </div>`;
+  }).join('');
+}
+
+function deselZone(cp, commune) {
+  _selectedZones.delete(_zoneKey(cp, commune));
+  _renderSelectedZones();
+  _syncZoneActiveState();
+  if (_selectedZones.size === 0) { showHome(); return; }
+  if (_selectedZones.size === 1) {
+    const z = [..._selectedZones.values()][0];
+    currentCp = z.cp; currentCommune = z.commune; zoneData = z.data;
+    sortCol = 'mandats'; sortAsc = false; selectedEntities = new Set();
+    renderZone();
+  } else {
+    renderAggregatedZones();
+  }
+}
+
+function _syncZoneActiveState() {
+  document.querySelectorAll('.zone-item').forEach(el => {
+    const cp = el.dataset.cp, comm = el.dataset.commune;
+    el.classList.toggle('active', !!cp && _selectedZones.has(_zoneKey(cp, comm)));
+  });
+}
+
 async function selectZone(cp, commune) {
-  currentCp = cp; currentCommune = commune;
-  document.querySelectorAll('.zone-item').forEach(el => el.classList.remove('active'));
-  const zi = document.getElementById('zi-'+zoneId(cp, commune));
-  if (zi) zi.classList.add('active');
+  const key = _zoneKey(cp, commune);
+  const zc  = document.getElementById('zone-content');
+
+  if (_selectedZones.has(key)) {
+    // Déjà sélectionnée : juste afficher sa vue (sans désélectionner)
+    if (_selectedZones.size === 1) {
+      const z = _selectedZones.get(key);
+      currentCp = cp; currentCommune = commune; zoneData = z.data;
+      document.getElementById('home-view').style.display = 'none';
+      zc.style.display = 'block';
+      sortCol = 'mandats'; sortAsc = false; selectedEntities = new Set();
+      renderZone();
+    } else {
+      renderAggregatedZones();
+    }
+    return;
+  }
+
+  // Nouvelle sélection — charger les données
   document.getElementById('home-view').style.display = 'none';
-  const zc = document.getElementById('zone-content');
   zc.style.display = 'block';
   zc.innerHTML = '<div class="empty" style="margin-top:120px">Chargement…</div>';
   try {
     const params = commune ? `?commune=${encodeURIComponent(commune)}` : '';
-    zoneData = await apiFetch('/zone/'+cp+params);
-    sortCol = 'mandats'; sortAsc = false;
-    selectedEntities = new Set();
-    renderZone();
+    const data = await apiFetch('/zone/'+cp+params);
+    _selectedZones.set(key, { cp, commune, data });
+    currentCp = cp; currentCommune = commune; zoneData = data;
+    sortCol = 'mandats'; sortAsc = false; selectedEntities = new Set();
+    _renderSelectedZones();
+    _syncZoneActiveState();
+    if (_selectedZones.size === 1) {
+      renderZone();
+    } else {
+      renderAggregatedZones();
+    }
   } catch(e) {
     zc.innerHTML = `<div class="api-err">Erreur chargement zone ${cp} : ${e.message}</div>`;
   }
+}
+
+function renderAggregatedZones() {
+  const zones = [..._selectedZones.values()].map(s => s.data).filter(Boolean);
+  if (!zones.length) return;
+  document.getElementById('home-view').style.display = 'none';
+  const zc = document.getElementById('zone-content');
+  zc.style.display = 'block';
+
+  const totalBiens    = zones.reduce((s, z) => s + (z.nb_biens    || 0), 0);
+  const totalMandats  = zones.reduce((s, z) => s + (z.nb_mandats  || 0), 0);
+  const totalAnnonces = zones.reduce((s, z) => s + (z.nb_annonces || 0), 0);
+
+  // Fusionner les entités par nom_commercial
+  const entMap = new Map();
+  for (const z of zones) {
+    for (const e of (z.entites || [])) {
+      const k = e.entite_id || e.nom;
+      if (!entMap.has(k)) entMap.set(k, { ...e, nb_mandats: 0, nb_biens: 0, zones: [] });
+      const em = entMap.get(k);
+      em.nb_mandats += e.nb_mandats || 0;
+      em.nb_biens   += e.nb_biens   || 0;
+      em.zones.push(z.commune);
+    }
+  }
+  const entites = [...entMap.values()].sort((a, b) => b.nb_mandats - a.nb_mandats);
+  const title = [..._selectedZones.values()].map(s => s.commune).join(' + ');
+
+  zc.innerHTML = `
+    <div class="page-head">
+      <div>
+        <div class="page-title" style="font-size:18px">${title}</div>
+        <div class="page-sub">${zones.length} zones · ${totalAnnonces} annonces actives</div>
+      </div>
+    </div>
+    <div class="content">
+      <div class="cards">
+        <div class="card"><div class="card-lbl">Biens uniques</div><div class="card-val">${totalBiens}</div></div>
+        <div class="card"><div class="card-lbl">Mandats</div><div class="card-val">${totalMandats}</div></div>
+        <div class="card"><div class="card-lbl">Entités</div><div class="card-val">${entMap.size}</div></div>
+        <div class="card"><div class="card-lbl">Zones</div><div class="card-val">${zones.length}</div></div>
+      </div>
+      <div class="panel" style="margin-bottom:14px">
+        <div class="p-head"><span class="p-title">Classement agrégé</span></div>
+        <div class="p-body" style="padding:0">
+          <table style="width:100%;border-collapse:collapse;font-size:12px">
+            <thead><tr style="background:#f7fafc;color:#718096;font-size:11px">
+              <th style="padding:8px 16px;text-align:left">Agence</th>
+              <th style="padding:8px 12px;text-align:right">Mandats</th>
+              <th style="padding:8px 12px;text-align:right">Biens</th>
+              <th style="padding:8px 16px;text-align:left;color:#a0aec0">Zones</th>
+            </tr></thead>
+            <tbody>${entites.slice(0, 50).map((e, i) => `
+              <tr style="border-top:1px solid #edf2f7${i===0?' font-weight:600':''}" onclick="openEntitePanel('${esc(e.nom)}')">
+                <td style="padding:8px 16px">${e.nom}</td>
+                <td style="padding:8px 12px;text-align:right">${e.nb_mandats}</td>
+                <td style="padding:8px 12px;text-align:right">${e.nb_biens}</td>
+                <td style="padding:8px 16px;color:#a0aec0;font-size:11px">${e.zones.join(', ')}</td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px">
+        ${zones.map(z => `
+          <div class="panel" style="cursor:pointer" onclick="selectZone('${z.cp}','${esc(z.commune)}')">
+            <div class="p-head">
+              <span class="p-title">${z.commune} <span style="color:#a0aec0;font-weight:400">${z.cp}</span></span>
+              <span style="font-size:11px;color:#718096">${z.nb_biens||0} biens</span>
+            </div>
+            <div class="p-body" style="padding:10px 20px;font-size:12px;color:#718096">
+              ${z.nb_mandats||0} mandats · ${z.nb_entites||0} entités · ${z.nb_annonces||0} annonces
+            </div>
+          </div>`).join('')}
+      </div>
+    </div>`;
 }
 
 function renderZone() {
