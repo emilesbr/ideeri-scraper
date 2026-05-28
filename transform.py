@@ -357,6 +357,13 @@ def upsert_entity(e: dict, scraped_at: str) -> str | None:
             updates["sur_seloger"]           = True
             if e.get("profile_url"):
                 updates["seloger_profile_url"] = e["profile_url"]
+        # Recalculer nom_commercial : préférer le nom le plus long entre LBC et SeLoger
+        new_nom_lbc = updates.get("nom_lbc") or row.get("nom_lbc") or ""
+        new_nom_sl  = updates.get("nom_seloger") or row.get("nom_seloger") or ""
+        if new_nom_lbc and new_nom_sl:
+            best = max(new_nom_lbc, new_nom_sl, key=len)
+            if best != row.get("nom_commercial"):
+                updates["nom_commercial"] = best
         if e.get("telephone") and not row.get("telephone"):
             updates["telephone"] = e["telephone"]
         # Enrichissement SIRET
