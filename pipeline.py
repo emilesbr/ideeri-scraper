@@ -651,14 +651,17 @@ def cmd_scrape(cp: str, commune: str, sl_code: str | None = None,
 # retry
 # ---------------------------------------------------------------------------
 
-def cmd_retry(cp: str, commune: str | None = None, wait_override: int | None = None):
+def cmd_retry(cp: str, commune: str | None = None, wait_override: int | None = None,
+              lbc_pages_override: str | None = None, sl_pages_override: str | None = None):
+    has_override = lbc_pages_override is not None or sl_pages_override is not None
+
     if commune:
         candidates = [_state_file(cp, commune)]
     else:
         candidates = sorted(DEBUG.glob(f"scrape_state_{cp}_*.json"))
 
-    # Filtrer ceux qui ont vraiment des erreurs
-    states_with_errors = []
+    # Charger tous les state files valides
+    valid_states: list[tuple[Path, dict]] = []
     for sf in candidates:
         if not sf.exists():
             continue
@@ -671,33 +674,54 @@ def cmd_retry(cp: str, commune: str | None = None, wait_override: int | None = N
         except (json.JSONDecodeError, OSError) as e:
             _warn(f"State file illisible ({sf.name}) : {e}")
             continue
-        if st.get("pages_erreur_lbc") or st.get("pages_erreur_sl"):
-            states_with_errors.append((sf, st))
+        valid_states.append((sf, st))
 
-    if not states_with_errors:
-        if candidates:
-            _ok(f"Run {cp} complet — aucune page manquante")
-        else:
+    if has_override:
+        # Avec override : utiliser n'importe quel state (sans exiger des erreurs)
+        if not valid_states:
             _err(f"Pas d'état de scrape trouvé pour {cp}")
             print(f"  Lance d'abord : {C}python3 pipeline.py run <cp> <commune>{RST}")
-        return
+            return
+        if len(valid_states) > 1:
+            _warn(f"Plusieurs communes pour {cp} :")
+            for sf, st in valid_states:
+                print(f"    → python3 pipeline.py retry {cp} {st.get('commune','?')}")
+            return
+        state_file, state = valid_states[0]
+    else:
+        # Sans override : seulement les states avec erreurs
+        states_with_errors = [(sf, st) for sf, st in valid_states
+                               if st.get("pages_erreur_lbc") or st.get("pages_erreur_sl")]
+        if not states_with_errors:
+            if valid_states:
+                _ok(f"Run {cp} complet — aucune page manquante")
+            else:
+                _err(f"Pas d'état de scrape trouvé pour {cp}")
+                print(f"  Lance d'abord : {C}python3 pipeline.py run <cp> <commune>{RST}")
+            return
 
-    if len(states_with_errors) > 1:
-        _warn(f"Plusieurs communes incomplètes pour {cp} :")
-        for sf, st in states_with_errors:
-            comm = st.get("commune", "?")
-            print(f"    → python3 pipeline.py retry {cp} {comm}")
-        return
+        if len(states_with_errors) > 1:
+            _warn(f"Plusieurs communes incomplètes pour {cp} :")
+            for sf, st in states_with_errors:
+                comm = st.get("commune", "?")
+                print(f"    → python3 pipeline.py retry {cp} {comm}")
+            return
+        state_file, state = states_with_errors[0]
 
-    state_file, state = states_with_errors[0]
     commune  = state["commune"]
     err_lbc  = state.get("pages_erreur_lbc", [])
     err_sl   = state.get("pages_erreur_sl",  [])
     lbc_base = state.get("lbc_base")
     sl_base  = state.get("sl_base")
 
+    # Appliquer les overrides de pages si fournis
+    if lbc_pages_override is not None:
+        err_lbc = [int(x.strip()) for x in lbc_pages_override.split(",") if x.strip().isdigit()]
+    if sl_pages_override is not None:
+        err_sl  = [int(x.strip()) for x in sl_pages_override.split(",") if x.strip().isdigit()]
+
     if not err_lbc and not err_sl:
-        _ok(f"Run {cp} ({commune}) complet — aucune page manquante")
+        _ok(f"Run {cp} ({commune}) — aucune page à re-scraper")
         return
 
     print(f"\n{B}=== Retry {commune} ({cp}) ==={RST}\n")
@@ -961,6 +985,10 @@ def main():
     p.add_argument("commune", nargs="?", default=None, help="Commune (optionnel si CP unique)")
     p.add_argument("--wait", type=int, default=None, dest="wait_override",
                    help="Override wait LBC en ms (ex: 8000)")
+    p.add_argument("--lbc-pages", dest="lbc_pages_override", default=None,
+                   help="Pages LBC à re-scraper (ex: 2,3,4) — override le state")
+    p.add_argument("--sl-pages", dest="sl_pages_override", default=None,
+                   help="Pages SeLoger à re-scraper (ex: 5,6) — override le state")
 
     p = sub.add_parser("reset", help="Réinitialise le matching d'un code postal")
     p.add_argument("cp")
@@ -977,7 +1005,7 @@ def main():
         "scrape":    lambda: cmd_scrape(args.cp, args.commune, getattr(args, "sl_code", None), getattr(args, "source", None), getattr(args, "lbc_loc", None)),
         "transform": lambda: cmd_transform(args.cp, args.commune),
         "run":       lambda: cmd_run(args.cp, args.commune, getattr(args, "sl_code", None), getattr(args, "source", None), getattr(args, "lbc_loc", None)),
-        "retry":     lambda: cmd_retry(args.cp, getattr(args, "commune", None), getattr(args, "wait_override", None)),
+        "retry":     lambda: cmd_retry(args.cp, getattr(args, "commune", None), getattr(args, "wait_override", None), getattr(args, "lbc_pages_override", None), getattr(args, "sl_pages_override", None)),
         "reset":     lambda: cmd_reset(args.cp),
         "enrich":    lambda: cmd_enrich(getattr(args, "all", False), getattr(args, "dry_run", False)),
     }[args.cmd]()

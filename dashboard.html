@@ -128,6 +128,17 @@ tr:hover td { background: #fafbfc; cursor: pointer; }
                     letter-spacing: .08em; color: #e53e3e; }
 .wait-slider { width: 100%; accent-color: #3182ce; }
 .wait-labels { display: flex; justify-content: space-between; font-size: 11px; color: #718096; margin-top: 4px; }
+.page-pill { display: inline-flex; align-items: center; justify-content: center;
+             width: 30px; height: 26px; border-radius: 5px; font-size: 12px; font-weight: 600;
+             cursor: pointer; border: 1.5px solid transparent; margin: 2px; transition: all .1s; }
+.pill-scraped  { border-color: #9ae6b4; background: #f0fff4; color: #276749; }
+.pill-missing  { border-color: #fbd38d; background: #fffaf0; color: #744210; }
+.pill-selected { border-color: #3182ce; background: #3182ce; color: #fff; }
+.portal-section { background: #f7fafc; border-radius: 8px; padding: 12px 14px; margin-bottom: 12px; }
+.portal-title { font-size: 12px; font-weight: 600; color: #2d3748; margin-bottom: 2px; }
+.portal-meta  { font-size: 11px; color: #718096; margin-bottom: 8px; }
+.last-run-box { background: #edf2f7; border-radius: 8px; padding: 10px 14px; margin-bottom: 14px;
+                font-size: 12px; color: #4a5568; line-height: 1.6; }
 .zrun { font-size: 10px; margin-top: 3px; display: flex; align-items: center; gap: 5px; }
 .zrun-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
 .zrun-text { color: #4a5568; }
@@ -183,16 +194,17 @@ tr:hover td { background: #fafbfc; cursor: pointer; }
 </div>
 
 <div class="overlay" id="run-overlay">
-  <div class="modal">
+  <div class="modal" style="width:580px">
     <div class="m-head">
-      <span class="m-title">Lancer un run</span>
+      <span class="m-title" id="run-title">Lancer un run</span>
       <div style="display:flex;align-items:center;gap:2px">
         <button class="m-minimize" id="run-minimize-btn" onclick="minimizeModal('run')" title="Réduire" style="display:none">─</button>
         <button class="m-close" onclick="closeRunModal()">×</button>
       </div>
     </div>
     <div class="m-body">
-      <div id="run-form">
+      <!-- Nouvelle zone -->
+      <div id="run-new-form" style="display:none">
         <div class="form-row"><label>Code postal *</label><input type="text" id="r-cp" placeholder="ex : 69700"></div>
         <div class="form-row"><label>Commune *</label><input type="text" id="r-commune" placeholder="ex : Givors"></div>
         <div class="form-row">
@@ -211,39 +223,23 @@ tr:hover td { background: #fafbfc; cursor: pointer; }
           </select>
         </div>
       </div>
+      <!-- Zone existante : info + sélecteurs de pages -->
+      <div id="run-existing-form" style="display:none">
+        <div id="run-last-info"></div>
+        <div id="run-sl-section"></div>
+        <div id="run-lbc-section"></div>
+        <div class="form-row">
+          <label>Wait LBC (ms) — augmenter si HTTP 500 persistant</label>
+          <input type="range" class="wait-slider" id="run-wait" min="6000" max="14000" step="1000" value="8000" oninput="updateRunWaitLabel()">
+          <div class="wait-labels"><span>6 000ms</span><span id="run-wait-val" style="font-weight:700;color:#2d3748">8 000ms</span><span>14 000ms</span></div>
+        </div>
+      </div>
       <div id="run-log" style="display:none"><div class="log-box" id="log-content"></div></div>
     </div>
     <div class="m-foot">
       <button class="btn btn-ghost" onclick="closeRunModal()">Annuler</button>
+      <button class="btn btn-ghost" id="run-accept-btn" onclick="acceptRunIncomplete()" title="Marquer comme complet sans relancer le scraping" style="display:none;color:#718096">✓ Accepter état actuel</button>
       <button class="btn btn-primary" id="run-action-btn" onclick="startRun()">▶ Lancer</button>
-    </div>
-  </div>
-</div>
-
-<div class="overlay" id="retry-overlay">
-  <div class="modal">
-    <div class="m-head">
-      <span class="m-title" id="retry-title">Retry pages manquantes</span>
-      <div style="display:flex;align-items:center;gap:2px">
-        <button class="m-minimize" id="retry-minimize-btn" onclick="minimizeModal('retry')" title="Réduire" style="display:none">─</button>
-        <button class="m-close" onclick="closeRetryModal()">×</button>
-      </div>
-    </div>
-    <div class="m-body">
-      <div id="retry-form">
-        <div id="retry-info" style="background:#fff3cd;border-radius:8px;padding:12px 14px;margin-bottom:16px;font-size:12px;color:#856404;line-height:1.6"></div>
-        <div class="form-row">
-          <label>Wait LBC (ms) — augmenter si HTTP 500 persistant</label>
-          <input type="range" class="wait-slider" id="retry-wait" min="6000" max="10000" step="2000" value="8000" oninput="updateWaitLabel()">
-          <div class="wait-labels"><span>6 000ms</span><span id="wait-val" style="font-weight:700;color:#2d3748">8 000ms</span><span>10 000ms</span></div>
-        </div>
-      </div>
-      <div id="retry-log" style="display:none"><div class="log-box" id="retry-log-content"></div></div>
-    </div>
-    <div class="m-foot">
-      <button class="btn btn-ghost" onclick="closeRetryModal()">Annuler</button>
-      <button class="btn btn-ghost" id="retry-accept-btn" onclick="acceptIncomplete()" title="Marquer comme complet sans relancer le scraping" style="color:#718096">✓ Accepter état actuel</button>
-      <button class="btn btn-primary" id="retry-action-btn" onclick="startRetry()">↩ Retry</button>
     </div>
   </div>
 </div>
@@ -269,8 +265,12 @@ let sortCol = 'mandats';
 let sortAsc = false;
 let zoneData = null;
 
-let retryCurrentCp = '';
-let retryCurrentCommune = '';
+let _runMode = 'new'; // 'new' | 'existing'
+let _runCp = '', _runCommune = '';
+let _runState = null;
+let _selLbc = new Set();
+let _selSl  = new Set();
+let _lbcTotalPages = 0;
 let selectedEntities = new Set();
 
 // ── Mini-bar (modal réduit) ──────────────────────────────────────────────────
@@ -278,11 +278,10 @@ let _miniTarget = null;
 
 function minimizeModal(target) {
   _miniTarget = target;
-  const overlayId = target === 'run' ? 'run-overlay' : 'retry-overlay';
-  document.getElementById(overlayId).classList.remove('open');
-  const title = target === 'run'
-    ? `Run — ${(document.getElementById('r-commune').value||'').trim() || '…'} ${(document.getElementById('r-cp').value||'').trim()}`
-    : `Retry — ${retryCurrentCommune} ${retryCurrentCp}`;
+  document.getElementById('run-overlay').classList.remove('open');
+  const title = _runMode === 'existing'
+    ? `Run — ${_runCommune} ${_runCp}`
+    : `Run — ${(document.getElementById('r-commune').value||'').trim() || '…'} ${(document.getElementById('r-cp').value||'').trim()}`;
   document.getElementById('mini-title').textContent  = title;
   document.getElementById('mini-status').innerHTML   = '<span class="mini-dot running" id="mini-dot"></span>En cours…';
   document.getElementById('mini-bar').style.display  = 'block';
@@ -290,8 +289,7 @@ function minimizeModal(target) {
 
 function restoreFromMini() {
   if (!_miniTarget) return;
-  const overlayId = _miniTarget === 'run' ? 'run-overlay' : 'retry-overlay';
-  document.getElementById(overlayId).classList.add('open');
+  document.getElementById('run-overlay').classList.add('open');
   document.getElementById('mini-bar').style.display = 'none';
 }
 
@@ -338,7 +336,7 @@ async function loadAlerts() {
       if (a.pages_erreur_sl?.length)  parts.push(`SL p${a.pages_erreur_sl.join(',')}`);
       if (a.statut === 'error')   parts.push('transform crashé');
       if (a.statut === 'running') parts.push('bloqué en running');
-      return `<div class="alert-item" onclick="openRetryModal('${a.cp}','${esc(a.commune)}',${JSON.stringify(a).replace(/'/g,"\\'")})">
+      return `<div class="alert-item" onclick="openRunModal('${a.cp}','${esc(a.commune)}')">
         <div class="a-cp">${a.cp} ${a.commune}</div>
         <div class="a-info">${parts.join(' · ') || 'incomplet'}</div>
       </div>`;
@@ -346,104 +344,211 @@ async function loadAlerts() {
   } catch(e) { /* silencieux si l'API n'est pas dispo */ }
 }
 
-function openRetryModal(cp, commune, alert) {
-  retryCurrentCp = cp; retryCurrentCommune = commune;
-  document.getElementById('retry-title').textContent = `Retry — ${commune} ${cp}`;
+// ── Run modal (unifié : nouvelle zone + relancer existante) ──────────────────
 
-  const parts = [];
-  if (alert.pages_erreur_lbc?.length) parts.push(`Pages LBC manquantes : ${alert.pages_erreur_lbc.join(', ')}`);
-  if (alert.pages_erreur_sl?.length)  parts.push(`Pages SeLoger manquantes : ${alert.pages_erreur_sl.join(', ')}`);
-  if (alert.statut === 'error')   parts.push('Dernier transform : erreur réseau — relancer le transform');
-  if (alert.statut === 'running') parts.push('Run bloqué en "running" — le transform a crashé');
-  document.getElementById('retry-info').innerHTML = parts.join('<br>') || 'Pages manquantes détectées';
+async function openRunModal(cp, commune) {
+  _runCp = cp || ''; _runCommune = commune || '';
 
-  document.getElementById('retry-wait').value = '8000';
-  document.getElementById('wait-val').textContent = '8 000ms';
-  document.getElementById('retry-form').style.display = 'block';
-  document.getElementById('retry-log').style.display  = 'none';
-  document.getElementById('retry-log-content').innerHTML = '';
-  const btn = document.getElementById('retry-action-btn');
-  btn.textContent = '↩ Retry'; btn.disabled = false; btn.onclick = startRetry;
-  document.getElementById('retry-overlay').classList.add('open');
+  document.getElementById('run-log').style.display = 'none';
+  document.getElementById('log-content').innerHTML = '';
+  document.getElementById('run-minimize-btn').style.display = 'none';
+  const btn = document.getElementById('run-action-btn');
+  btn.textContent = '▶ Lancer'; btn.disabled = false; btn.onclick = startRun;
+
+  if (!cp || !commune) {
+    _runMode = 'new';
+    document.getElementById('run-title').textContent = 'Lancer un run';
+    document.getElementById('run-new-form').style.display = 'block';
+    document.getElementById('run-existing-form').style.display = 'none';
+    document.getElementById('run-accept-btn').style.display = 'none';
+    document.getElementById('r-cp').value = '';
+    document.getElementById('r-commune').value = '';
+    document.getElementById('r-slcode').value = '';
+    document.getElementById('r-lbcloc').value = '';
+    document.getElementById('r-source').value = '';
+  } else {
+    _runMode = 'existing';
+    document.getElementById('run-title').textContent = `▶ Relancer — ${commune} ${cp}`;
+    document.getElementById('run-new-form').style.display = 'none';
+    document.getElementById('run-existing-form').style.display = 'block';
+    document.getElementById('run-accept-btn').style.display = 'inline';
+    document.getElementById('run-last-info').innerHTML = '<div style="color:#a0aec0;font-size:12px;padding:8px 0">Chargement…</div>';
+    document.getElementById('run-sl-section').innerHTML = '';
+    document.getElementById('run-lbc-section').innerHTML = '';
+    document.getElementById('run-wait').value = '8000';
+    document.getElementById('run-wait-val').textContent = '8 000ms';
+    _selLbc = new Set(); _selSl = new Set(); _runState = null; _lbcTotalPages = 0;
+    try {
+      const st = await apiFetch(`/zone/${cp}/state?commune=${encodeURIComponent(commune)}`);
+      _runState = st;
+      _buildExistingZoneUI(st);
+    } catch(e) {
+      document.getElementById('run-last-info').innerHTML = `<div style="color:#fc8181;font-size:12px">Erreur : ${e.message}</div>`;
+    }
+  }
+  document.getElementById('run-overlay').classList.add('open');
 }
 
-function closeRetryModal() {
-  document.getElementById('retry-overlay').classList.remove('open');
-  document.getElementById('retry-minimize-btn').style.display = 'none';
+function _buildExistingZoneUI(st) {
+  // Dernier run
+  const lr = st.last_run;
+  let lrHtml = '';
+  if (lr) {
+    const date = new Date(lr.scraped_at).toLocaleDateString('fr-FR', {day:'numeric',month:'short',year:'numeric'});
+    const ok   = lr.statut === 'ok';
+    const stat = ok ? '<span style="color:#38a169;font-weight:600">✓ ok</span>'
+                    : `<span style="color:#e53e3e;font-weight:600">✗ ${lr.statut}</span>`;
+    lrHtml = `<div class="last-run-box"><strong>Dernier run :</strong> ${date} · ${stat} · ${lr.nb_annonces_trouvees||0} annonces</div>`;
+  }
+  document.getElementById('run-last-info').innerHTML = lrHtml;
+
+  // SeLoger
+  const slTotal   = st.sl_pages || 0;
+  const slScraped = new Set(st.sl_scraped || []);
+  const slErr     = new Set(st.pages_erreur_sl || []);
+  _selSl = new Set();
+  for (let p = 1; p <= slTotal; p++) if (!slScraped.has(p) || slErr.has(p)) _selSl.add(p);
+  document.getElementById('run-sl-section').innerHTML = _portalSection('sl', 'SeLoger', slTotal, slScraped, slErr);
+
+  // LBC
+  const lbcTotal   = st.lbc_pages || 0;
+  const lbcScraped = new Set(st.lbc_scraped || []);
+  const lbcErr     = new Set(st.pages_erreur_lbc || []);
+  _lbcTotalPages   = lbcTotal || Math.max(0, ...lbcScraped);
+  _selLbc = new Set();
+  if (_lbcTotalPages > 0) {
+    for (let p = 1; p <= _lbcTotalPages; p++) if (!lbcScraped.has(p) || lbcErr.has(p)) _selLbc.add(p);
+  }
+  document.getElementById('run-lbc-section').innerHTML = _portalSection('lbc', 'LBC', lbcTotal, lbcScraped, lbcErr, lbcTotal === 0);
 }
 
-async function acceptIncomplete() {
-  const cp = retryCurrentCp, commune = retryCurrentCommune;
-  const btn = document.getElementById('retry-accept-btn');
+function _portalSection(src, label, total, scraped, errors, showTotalInput=false) {
+  const nScraped = scraped.size;
+  let meta = total > 0
+    ? `${total} page${total>1?'s':''} identifiée${total>1?'s':''} · ${nScraped} scrapée${nScraped>1?'s':''}`
+    : `<span style="color:#ed8936">Sondage échoué — nombre de pages inconnu</span>`;
+
+  let html = `<div class="portal-section">
+    <div style="display:flex;justify-content:space-between;align-items:baseline">
+      <div class="portal-title">${label}</div>
+      <div class="portal-meta">${meta}</div>
+    </div>`;
+
+  if (showTotalInput) {
+    html += `<div style="display:flex;align-items:center;gap:8px;margin:8px 0 4px;font-size:12px;color:#4a5568">
+      <span>Total pages estimé :</span>
+      <input type="number" id="lbc-total-input" min="1" max="30" value="${_lbcTotalPages||''}"
+             style="width:64px;padding:4px 8px;border:1px solid #cbd5e0;border-radius:5px;font-size:12px"
+             oninput="updateLbcTotal(this.value)">
+    </div>`;
+  }
+
+  const sel = src === 'lbc' ? _selLbc : _selSl;
+  const maxP = Math.max(total, ...[...scraped], ...[...sel], 0);
+  html += `<div id="${src}-pills" style="display:flex;flex-wrap:wrap;gap:3px;margin:8px 0 10px">`;
+  if (maxP > 0) {
+    for (let p = 1; p <= maxP; p++) html += _pillHtml(src, p, scraped, errors, sel);
+  } else {
+    html += `<span style="font-size:11px;color:#a0aec0;font-style:italic;padding:4px 0">Aucune page scrapée — entrez le nombre de pages ci-dessus</span>`;
+  }
+  html += `</div>`;
+
+  if (maxP > 0) {
+    const nErr = errors.size;
+    html += `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+      <button class="btn btn-ghost" style="font-size:11px;padding:3px 10px" onclick="selectAllPages('${src}')">Tout</button>
+      <button class="btn btn-ghost" style="font-size:11px;padding:3px 10px" onclick="selectNoPages('${src}')">Rien</button>
+      ${nErr ? `<span style="font-size:11px;color:#ed8936">⚠ ${nErr} page${nErr>1?'s':''} en erreur</span>` : ''}
+      <span style="font-size:11px;color:#a0aec0;margin-left:4px">
+        <span class="page-pill pill-scraped" style="cursor:default;font-size:10px;width:auto;padding:0 6px">déjà scrapée</span>
+        <span class="page-pill pill-missing" style="cursor:default;font-size:10px;width:auto;padding:0 6px">manquante</span>
+        <span class="page-pill pill-selected" style="cursor:default;font-size:10px;width:auto;padding:0 6px">à lancer</span>
+      </span>
+    </div>`;
+  }
+  return html + '</div>';
+}
+
+function _pillHtml(src, p, scraped, errors, sel) {
+  const isSel  = sel.has(p);
+  const isScrp = scraped.has(p) && !errors.has(p);
+  const cls = 'page-pill ' + (isSel ? 'pill-selected' : isScrp ? 'pill-scraped' : 'pill-missing');
+  return `<button class="${cls}" id="${src}-pill-${p}" onclick="togglePage('${src}',${p})" title="Page ${p}${isScrp?' (scrapée)':''}${errors.has(p)?' (erreur)':''}">${p}</button>`;
+}
+
+function togglePage(src, p) {
+  const sel = src === 'lbc' ? _selLbc : _selSl;
+  if (sel.has(p)) sel.delete(p); else sel.add(p);
+  const st = _runState || {};
+  const scraped = new Set((src === 'lbc' ? st.lbc_scraped : st.sl_scraped) || []);
+  const errors  = new Set((src === 'lbc' ? st.pages_erreur_lbc : st.pages_erreur_sl) || []);
+  const pill = document.getElementById(`${src}-pill-${p}`);
+  if (pill) pill.className = 'page-pill ' + (sel.has(p) ? 'pill-selected' : (scraped.has(p) && !errors.has(p)) ? 'pill-scraped' : 'pill-missing');
+}
+
+function selectAllPages(src) {
+  const st = _runState || {};
+  const scraped = new Set((src === 'lbc' ? st.lbc_scraped : st.sl_scraped) || []);
+  const total = src === 'lbc' ? _lbcTotalPages : (st.sl_pages || 0);
+  const sel = src === 'lbc' ? _selLbc : _selSl;
+  sel.clear();
+  for (let p = 1; p <= Math.max(total, ...scraped, 0); p++) sel.add(p);
+  scraped.forEach(p => sel.add(p));
+  _refreshPills(src);
+}
+
+function selectNoPages(src) {
+  (src === 'lbc' ? _selLbc : _selSl).clear();
+  _refreshPills(src);
+}
+
+function _refreshPills(src) {
+  const st = _runState || {};
+  const total   = src === 'lbc' ? _lbcTotalPages : (st.sl_pages || 0);
+  const scraped = new Set((src === 'lbc' ? st.lbc_scraped : st.sl_scraped) || []);
+  const errors  = new Set((src === 'lbc' ? st.pages_erreur_lbc : st.pages_erreur_sl) || []);
+  const sel = src === 'lbc' ? _selLbc : _selSl;
+  const container = document.getElementById(`${src}-pills`);
+  if (!container) return;
+  const maxP = Math.max(total, ...[...scraped], ...[...sel], 0);
+  container.innerHTML = '';
+  for (let p = 1; p <= maxP; p++) container.innerHTML += _pillHtml(src, p, scraped, errors, sel);
+}
+
+function updateLbcTotal(val) {
+  const n = parseInt(val);
+  if (!n || n < 1 || n > 30) return;
+  _lbcTotalPages = n;
+  const st = _runState || {};
+  const lbcScraped = new Set(st.lbc_scraped || []);
+  const lbcErr     = new Set(st.pages_erreur_lbc || []);
+  _selLbc = new Set();
+  for (let p = 1; p <= n; p++) if (!lbcScraped.has(p) || lbcErr.has(p)) _selLbc.add(p);
+  _refreshPills('lbc');
+}
+
+function updateRunWaitLabel() {
+  const v = document.getElementById('run-wait').value;
+  document.getElementById('run-wait-val').textContent = parseInt(v).toLocaleString('fr-FR') + 'ms';
+}
+
+async function acceptRunIncomplete() {
+  const btn = document.getElementById('run-accept-btn');
   btn.disabled = true; btn.textContent = '…';
   try {
-    const res = await fetch(`${API}/zone/${cp}/accept-incomplete`, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({commune})
+    await fetch(`${API}/zone/${_runCp}/accept-incomplete`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({commune: _runCommune})
     });
-    const d = await res.json();
-    closeRetryModal();
-    loadAlerts();
-    loadZones();
+    closeRunModal(); loadAlerts(); loadZones();
   } catch(e) {
     btn.disabled = false; btn.textContent = '✓ Accepter état actuel';
   }
 }
 
-function updateWaitLabel() {
-  const v = document.getElementById('retry-wait').value;
-  document.getElementById('wait-val').textContent = parseInt(v).toLocaleString('fr-FR') + 'ms';
-}
-
-async function startRetry() {
-  const wait = document.getElementById('retry-wait').value;
-  document.getElementById('retry-form').style.display = 'none';
-  document.getElementById('retry-log').style.display  = 'block';
-  document.getElementById('retry-minimize-btn').style.display = 'inline';
-  const btn = document.getElementById('retry-action-btn');
-  btn.textContent = 'En cours…'; btn.disabled = true;
-
-  const log = document.getElementById('retry-log-content');
-  const add = (line) => {
-    const d = document.createElement('div');
-    d.className = line.includes('✓')||line.includes('OK')?'l-ok'
-      :line.includes('✗')||line.includes('ERR')||line.includes('ECHEC')?'l-err'
-      :line.includes('⚠')||line.includes('WARN')?'l-warn':'';
-    d.textContent = line; log.appendChild(d); log.scrollTop = log.scrollHeight;
-  };
-
-  try {
-    const resp = await fetch(`${API}/retry/${retryCurrentCp}?wait=${wait}`, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({commune: retryCurrentCommune})
-    });
-    const reader = resp.body.getReader(), decoder = new TextDecoder();
-    let buf = '';
-    while (true) {
-      const {done, value} = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, {stream: true});
-      const lines = buf.split('\n'); buf = lines.pop();
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        const payload = JSON.parse(line.slice(6));
-        if (payload === '__DONE__') {
-          add('✓ Retry terminé');
-          _miniDone(true);
-          btn.textContent = 'Voir les résultats'; btn.disabled = false;
-          btn.onclick = () => { closeMini(); closeRetryModal(); selectZone(retryCurrentCp, retryCurrentCommune); loadZones(); loadAlerts(); };
-          return;
-        }
-        add(payload);
-      }
-    }
-  } catch(e) {
-    add('✗ Erreur connexion API : ' + e.message);
-    _miniDone(false);
-    btn.textContent = 'Fermer'; btn.disabled = false; btn.onclick = closeRetryModal;
-  }
+function closeRunModal() {
+  document.getElementById('run-overlay').classList.remove('open');
+  document.getElementById('run-minimize-btn').style.display = 'none';
 }
 
 // ── Sidebar ─────────────────────────────────────────────────────────────────
@@ -530,7 +635,6 @@ function renderZone() {
         <div class="page-sub">Dernier run : ${z.last_run||'—'}${rsExtra?' · '+rsExtra:''} · ${z.nb_annonces||0} annonces actives</div>
       </div>
       <div style="display:flex;gap:8px">
-        ${(rs.err_lbc?.length||rs.err_sl?.length)?`<button class="btn btn-ghost" style="color:#ed8936;border:1px solid #f6ad55" onclick="openRetryFromZone()">↩ Retry pages manquantes</button>`:''}
         <button class="btn btn-primary" onclick="openRunModal('${z.cp}','${esc(z.commune)}')">▶ Relancer</button>
       </div>
     </div>
@@ -722,56 +826,38 @@ async function showEntite(encodedNom) {
   }
 }
 
-// ── Run modal ────────────────────────────────────────────────────────────────
-async function openRunModal(cp, commune) {
-  document.getElementById('r-cp').value      = cp||'';
-  document.getElementById('r-commune').value = commune||'';
-  document.getElementById('r-slcode').value  = '';
-  document.getElementById('r-lbcloc').value  = '';
-  document.getElementById('r-source').value  = '';
-  document.getElementById('run-form').style.display = 'block';
-  document.getElementById('run-log').style.display  = 'none';
-  document.getElementById('log-content').innerHTML  = '';
-  const btn = document.getElementById('run-action-btn');
-  btn.textContent='▶ Lancer'; btn.disabled=false; btn.onclick=startRun;
-  document.getElementById('run-overlay').classList.add('open');
-  if (cp && commune) {
-    try {
-      const st = await apiFetch(`/zone/${cp}/state?commune=${encodeURIComponent(commune)}`);
-      if (st.sl_code)  document.getElementById('r-slcode').value = st.sl_code;
-      if (st.lbc_base) document.getElementById('r-lbcloc').value = st.lbc_base;
-    } catch(e) { /* pas de state — laisser vide */ }
-  }
-}
-
-function openRetryFromZone() {
-  const z = zoneData;
-  if (!z) return;
-  const rs = z.run_status || {};
-  openRetryModal(z.cp, z.commune, {
-    pages_erreur_lbc: rs.err_lbc || [],
-    pages_erreur_sl:  rs.err_sl  || [],
-    statut: rs.status,
-  });
-}
-function closeRunModal() {
-  document.getElementById('run-overlay').classList.remove('open');
-  document.getElementById('run-minimize-btn').style.display = 'none';
-}
-
 async function startRun() {
-  const cp      = document.getElementById('r-cp').value.trim();
-  const commune = document.getElementById('r-commune').value.trim();
-  const slCode  = document.getElementById('r-slcode').value.trim();
-  const lbcLoc  = document.getElementById('r-lbcloc').value.trim();
-  const source  = document.getElementById('r-source').value;
-  if (!cp||!commune) { alert('Code postal et commune requis'); return; }
+  let url, body;
+  let cp = _runCp, commune = _runCommune;
 
-  document.getElementById('run-form').style.display = 'none';
+  if (_runMode === 'new') {
+    cp      = document.getElementById('r-cp').value.trim();
+    commune = document.getElementById('r-commune').value.trim();
+    const slCode = document.getElementById('r-slcode').value.trim();
+    const lbcLoc = document.getElementById('r-lbcloc').value.trim();
+    const source = document.getElementById('r-source').value;
+    if (!cp || !commune) { alert('Code postal et commune requis'); return; }
+    url  = `${API}/run`;
+    body = { cp, commune,
+      ...(slCode?{sl_code:slCode}:{}),
+      ...(lbcLoc?{lbc_loc:lbcLoc}:{}),
+      ...(source?{source}:{}) };
+  } else {
+    const lbcPages = [..._selLbc].sort((a,b)=>a-b);
+    const slPages  = [..._selSl].sort((a,b)=>a-b);
+    if (!lbcPages.length && !slPages.length) { alert('Sélectionne au moins une page à scraper'); return; }
+    const wait = document.getElementById('run-wait').value;
+    url  = `${API}/retry/${cp}?wait=${wait}`;
+    body = { commune, lbc_pages: lbcPages, sl_pages: slPages };
+  }
+
+  document.getElementById('run-new-form').style.display      = 'none';
+  document.getElementById('run-existing-form').style.display = 'none';
   document.getElementById('run-log').style.display  = 'block';
-  document.getElementById('run-minimize-btn').style.display = 'inline';
+  document.getElementById('run-minimize-btn').style.display  = 'inline';
+  document.getElementById('run-accept-btn').style.display    = 'none';
   const btn = document.getElementById('run-action-btn');
-  btn.textContent='En cours…'; btn.disabled=true;
+  btn.textContent = 'En cours…'; btn.disabled = true;
 
   const log = document.getElementById('log-content');
   const add = (line) => {
@@ -779,42 +865,39 @@ async function startRun() {
     d.className = line.includes('✓')||line.includes('OK')||line.includes('Terminé')?'l-ok'
       :line.includes('✗')||line.includes('ERR')||line.includes('ECHEC')?'l-err'
       :line.includes('⚠')||line.includes('WARN')?'l-warn':'';
-    d.textContent=line; log.appendChild(d); log.scrollTop=log.scrollHeight;
+    d.textContent = line; log.appendChild(d); log.scrollTop = log.scrollHeight;
   };
 
   try {
-    const resp = await fetch(`${API}/run`, {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ cp, commune,
-        ...(slCode?{sl_code:slCode}:{}),
-        ...(lbcLoc?{lbc_loc:lbcLoc}:{}),
-        ...(source?{source}:{}) })
+    const resp = await fetch(url, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)
     });
-    const reader=resp.body.getReader(), decoder=new TextDecoder();
-    let buf='';
+    const reader = resp.body.getReader(), decoder = new TextDecoder();
+    let buf = '';
     while (true) {
-      const {done,value}=await reader.read();
+      const {done, value} = await reader.read();
       if (done) break;
-      buf+=decoder.decode(value,{stream:true});
-      const lines=buf.split('\n'); buf=lines.pop();
+      buf += decoder.decode(value, {stream: true});
+      const lines = buf.split('\n'); buf = lines.pop();
       for (const line of lines) {
         if (!line.startsWith('data: ')) continue;
-        const payload=JSON.parse(line.slice(6));
-        if (payload==='__DONE__') {
+        const payload = JSON.parse(line.slice(6));
+        if (payload === '__DONE__') {
           add('✓ Pipeline terminé');
           _miniDone(true);
-          btn.textContent='Voir les résultats'; btn.disabled=false;
-          btn.onclick=()=>{ closeMini(); closeRunModal(); selectZone(cp,commune); loadZones(); };
+          btn.textContent = 'Voir les résultats'; btn.disabled = false;
+          btn.onclick = () => { closeMini(); closeRunModal(); selectZone(cp, commune); loadZones(); loadAlerts(); };
           return;
         }
         add(payload);
       }
     }
   } catch(e) {
-    add('✗ Erreur connexion API : '+e.message);
+    add('✗ Erreur connexion API : ' + e.message);
     add('  Vérifiez que python3 api.py est lancé.');
     _miniDone(false);
-    btn.textContent='Fermer'; btn.disabled=false; btn.onclick=closeRunModal;
+    btn.textContent = 'Fermer'; btn.disabled = false; btn.onclick = closeRunModal;
   }
 }
 

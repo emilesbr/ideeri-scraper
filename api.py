@@ -540,8 +540,24 @@ def zone_state(cp):
     if m:
         sl_code = m.group(1)
 
-    # Ne pas retourner lbc_base si lbc_pages=0 (URL échouée — forcer une saisie fraîche)
-    lbc_base = state.get("lbc_base", "") if state.get("lbc_pages", 0) > 0 else ""
+    lbc_base = state.get("lbc_base", "")
+
+    # Pages effectivement scrapées (depuis les tables stg)
+    lbc_scraped: list[int] = []
+    sl_scraped:  list[int] = []
+    last_run: dict | None = None
+    try:
+        sb = _sb()
+        lbc_rows = sb.table("stg_lbc").select("page").eq("code_postal", cp).execute().data
+        sl_rows  = sb.table("stg_seloger").select("page").eq("code_postal", cp).execute().data
+        lbc_scraped = sorted(set(r["page"] for r in lbc_rows if r.get("page")))
+        sl_scraped  = sorted(set(r["page"] for r in sl_rows  if r.get("page")))
+        runs_data = sb.table("runs").select("scraped_at,statut,nb_annonces_trouvees") \
+                      .eq("code_postal", cp).order("scraped_at", desc=True).limit(1).execute().data
+        if runs_data:
+            last_run = runs_data[0]
+    except Exception:
+        pass
 
     return jsonify({
         "sl_code":  sl_code,
@@ -551,6 +567,9 @@ def zone_state(cp):
         "sl_pages":  state.get("sl_pages", 0),
         "pages_erreur_lbc": state.get("pages_erreur_lbc") or [],
         "pages_erreur_sl":  state.get("pages_erreur_sl") or [],
+        "lbc_scraped": lbc_scraped,
+        "sl_scraped":  sl_scraped,
+        "last_run":    last_run,
     })
 
 
@@ -595,17 +614,23 @@ def accept_incomplete(cp):
 @app.route("/api/retry/<cp>", methods=["POST"])
 def retry_zone(cp):
     try:
-        wait = int(request.args.get("wait", "6000"))
+        wait = int(request.args.get("wait", "8000"))
+        wait = max(4000, min(20000, wait))
     except ValueError:
-        wait = 6000
-    if wait not in (6000, 8000, 10000):
-        wait = 6000
-    commune = (request.json or {}).get("commune", "").strip() or None
+        wait = 8000
+    body = request.json or {}
+    commune   = body.get("commune", "").strip() or None
+    lbc_pages = body.get("lbc_pages") or []
+    sl_pages  = body.get("sl_pages")  or []
 
     cmd = [sys.executable, "pipeline.py", "retry", cp]
     if commune:
         cmd.append(commune)
     cmd += ["--wait", str(wait)]
+    if lbc_pages:
+        cmd += ["--lbc-pages", ",".join(str(p) for p in lbc_pages)]
+    if sl_pages:
+        cmd += ["--sl-pages", ",".join(str(p) for p in sl_pages)]
 
     def generate():
         proc = subprocess.Popen(
