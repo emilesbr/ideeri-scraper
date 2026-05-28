@@ -481,6 +481,10 @@ def upsert_annonce(ann: dict, entite_id: str | None, run_id: int, scraped_at: st
         "est_active":        True,
     }
 
+    # commune : peut être normalisée après coup (ex: "Lyon" → "Lyon 1er Arrondissement")
+    if ann.get("commune") and ann["commune"] != row.get("commune"):
+        updates["commune"] = ann["commune"]
+
     # type_bien : corrigible si le parseur s'améliore (villa/pavillon non détectés par titre)
     if ann.get("type_bien") and ann["type_bien"] != row.get("type_bien"):
         updates["type_bien"] = ann["type_bien"]
