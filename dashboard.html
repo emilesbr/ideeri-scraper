@@ -332,6 +332,7 @@ function closeMini() {
 
 function _miniDone(ok) {
   _miniRunning = false;
+  localStorage.removeItem('active_run');
   document.getElementById('mini-close-btn').style.display = 'inline';
   // Mini-bar
   const dot = document.getElementById('mini-dot');
@@ -944,6 +945,8 @@ async function startRun() {
     body = { commune, lbc_pages: lbcPages, sl_pages: slPages };
   }
 
+  localStorage.setItem('active_run', JSON.stringify({cp, commune, mode: _runMode}));
+
   document.getElementById('run-new-form').style.display      = 'none';
   document.getElementById('run-existing-form').style.display = 'none';
   document.getElementById('run-log').style.display  = 'block';
@@ -1095,8 +1098,57 @@ function fmt(n)     { return n?.toLocaleString('fr-FR')?? '—'; }
 function esc(s)     { return (s||'').replace(/'/g,"\\'"); }
 function htmlEsc(s) { return (s||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
+// ── Restauration run actif après rechargement ────────────────────────────────
+let _pollTimer = null;
+
+function _showRunIndicator(cp, commune) {
+  _runCp = cp; _runCommune = commune;
+  const label = `${commune} ${cp}`;
+  const sb = document.getElementById('sb-running');
+  sb.className = 'sb-run-indicator running';
+  sb.style.display = 'flex';
+  document.getElementById('sb-dot').className = 'mini-dot running';
+  document.getElementById('sb-running-text').textContent = `Run en cours — ${label}`;
+  _miniTarget = 'run';
+  _miniRunning = true;
+}
+
+function _startRunPoller(cp) {
+  if (_pollTimer) clearInterval(_pollTimer);
+  _pollTimer = setInterval(async () => {
+    try {
+      const runs = await apiFetch('/runs');
+      const latest = runs.find(r => r.cp === cp);
+      if (!latest || latest.statut !== 'running') {
+        clearInterval(_pollTimer); _pollTimer = null;
+        _miniDone(latest?.statut === 'ok');
+        loadZones(); loadAlerts();
+      }
+    } catch(_) {}
+  }, 3000);
+}
+
+async function checkActiveRun() {
+  const saved = localStorage.getItem('active_run');
+  if (!saved) return;
+  let info;
+  try { info = JSON.parse(saved); } catch(_) { localStorage.removeItem('active_run'); return; }
+  const {cp, commune} = info;
+  try {
+    const runs = await apiFetch('/runs');
+    const active = runs.find(r => r.cp === cp && r.statut === 'running');
+    if (active) {
+      _showRunIndicator(cp, commune);
+      _startRunPoller(cp);
+    } else {
+      localStorage.removeItem('active_run');
+    }
+  } catch(_) {}
+}
+
 loadZones();
 loadAlerts();
+checkActiveRun();
 </script>
 </body>
 </html>
