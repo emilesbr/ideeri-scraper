@@ -1135,6 +1135,10 @@ function _showRunIndicator(cp, commune) {
   document.getElementById('sb-running-text').textContent = `Run en cours — ${label}`;
   _miniTarget = 'run';
   _miniRunning = true;
+  // Snapshot minimal pour restoreFromMini (run détecté au reload, pas de log disponible)
+  if (!_miniSnapshot) {
+    _miniSnapshot = { logHtml: `<div style="color:#a0aec0;font-size:12px;padding:8px">Run détecté en cours — log non disponible (run lancé hors dashboard)</div>`, title: `▶ Run en cours — ${label}`, cp, commune };
+  }
 }
 
 function _startRunPoller(cp) {
@@ -1153,20 +1157,18 @@ function _startRunPoller(cp) {
 }
 
 async function checkActiveRun() {
-  const saved = localStorage.getItem('active_run');
-  if (!saved) return;
-  let info;
-  try { info = JSON.parse(saved); } catch(_) { localStorage.removeItem('active_run'); return; }
-  const {cp, commune} = info;
   try {
     const runs = await apiFetch('/runs');
-    const active = runs.find(r => r.cp === cp && r.statut === 'running');
-    if (active) {
-      _showRunIndicator(cp, commune);
-      _startRunPoller(cp);
-    } else {
-      localStorage.removeItem('active_run');
+    // 1. Run en cours détecté en base (lancé depuis terminal ou dashboard)
+    const activeDb = runs.find(r => r.statut === 'running');
+    if (activeDb) {
+      localStorage.setItem('active_run', JSON.stringify({cp: activeDb.cp, commune: activeDb.commune}));
+      _showRunIndicator(activeDb.cp, activeDb.commune);
+      _startRunPoller(activeDb.cp);
+      return;
     }
+    // 2. Pas de run 'running' en base — nettoyer localStorage si périmé
+    localStorage.removeItem('active_run');
   } catch(_) {}
 }
 
