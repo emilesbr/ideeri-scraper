@@ -224,7 +224,7 @@ tr:hover td { background: #fafbfc; cursor: pointer; }
     <div class="sb-head" onclick="showHome()" style="cursor:pointer;user-select:none">Ide<em>eri</em></div>
 
     <!-- Panel 1 : Entités -->
-    <div class="sb-panel" id="spanel-entites">
+    <div class="sb-panel collapsed" id="spanel-entites">
       <div class="sb-panel-head" onclick="togglePanel('entites')">
         <span>Entités</span><span class="sb-arrow" id="sarrow-entites">▾</span>
       </div>
@@ -242,7 +242,7 @@ tr:hover td { background: #fafbfc; cursor: pointer; }
     </div>
 
     <!-- Panel 2 : Zones -->
-    <div class="sb-panel" id="spanel-zones">
+    <div class="sb-panel collapsed" id="spanel-zones">
       <div class="sb-panel-head" onclick="togglePanel('zones')">
         <span id="zone-section-label">Zones</span><span class="sb-arrow" id="sarrow-zones">▾</span>
       </div>
@@ -808,17 +808,17 @@ function _initMap() {
   const zones = (_mapData || []).filter(z => z.code_insee);
   if (!zones.length) { _map.setView([46.2, 2.2], 6); return; }
 
-  const maxBiens = Math.max(...zones.map(z => z.nb_biens || 0), 1);
   const allLayers = [];
 
   Promise.all(zones.map(zone =>
     fetch(`https://geo.api.gouv.fr/communes/${zone.code_insee}?format=geojson&geometry=contour`)
       .then(r => r.json())
       .then(gj => {
-        const t = (zone.nb_biens || 0) / maxBiens;
         const lyr = L.geoJSON(gj, {
-          style: { fillColor: _mapColor(t), fillOpacity: 0.7, color: '#fff', weight: 2 }
+          style: { fillColor: '#4a90d9', fillOpacity: 0, color: '#4a90d9', weight: 2 }
         });
+        lyr.on('mouseover', () => lyr.setStyle({ fillOpacity: 0.08 }));
+        lyr.on('mouseout',  () => lyr.setStyle({ fillOpacity: 0 }));
         lyr.bindTooltip(
           `<strong>${zone.commune}</strong> <span style="color:#718096">${zone.cp}</span><br>` +
           `${zone.nb_biens} biens · ${zone.nb_entites} entités`,
