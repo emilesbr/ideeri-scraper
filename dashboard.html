@@ -435,7 +435,12 @@ function _portalSection(src, label, total, scraped, errors, showTotalInput=false
     </div>`;
 
   if (showTotalInput) {
-    html += `<div style="display:flex;align-items:center;gap:8px;margin:8px 0 4px;font-size:12px;color:#4a5568">
+    html += `<div style="display:flex;align-items:center;gap:10px;margin:8px 0 8px;flex-wrap:wrap">
+      <button class="btn btn-primary" style="font-size:12px;padding:5px 12px" onclick="startLbcFullRun()">▶ Run complet LBC</button>
+      <span style="font-size:11px;color:#718096">relance le sondage + toutes les pages automatiquement</span>
+    </div>
+    <div style="font-size:11px;color:#a0aec0;margin-bottom:6px">ou sélectionner les pages manuellement :</div>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;font-size:12px;color:#4a5568">
       <span>Total pages estimé :</span>
       <input type="number" id="lbc-total-input" min="1" max="30" value="${_lbcTotalPages||''}"
              style="width:64px;padding:4px 8px;border:1px solid #cbd5e0;border-radius:5px;font-size:12px"
@@ -530,6 +535,18 @@ function updateLbcTotal(val) {
 function updateRunWaitLabel() {
   const v = document.getElementById('run-wait').value;
   document.getElementById('run-wait-val').textContent = parseInt(v).toLocaleString('fr-FR') + 'ms';
+}
+
+function startLbcFullRun() {
+  if (!_runState?.lbc_base) { alert('URL LBC non disponible dans le state'); return; }
+  // Bascule en mode "new" en pré-remplissant les champs cachés
+  _runMode = 'new';
+  document.getElementById('r-cp').value      = _runCp;
+  document.getElementById('r-commune').value = _runCommune;
+  document.getElementById('r-slcode').value  = '';
+  document.getElementById('r-lbcloc').value  = _runState.lbc_base;
+  document.getElementById('r-source').value  = 'lbc';
+  startRun();
 }
 
 async function acceptRunIncomplete() {
