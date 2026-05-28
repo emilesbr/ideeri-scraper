@@ -565,8 +565,14 @@ def cmd_scrape(cp: str, commune: str, sl_code: str | None = None,
         return None
 
     # Tracking pages en erreur
-    err_lbc: list[int] = [] if r_lbc["status"] == 200 else ([1] if do_lbc else [])
-    err_sl:  list[int] = [] if r_sl["status"]  == 200 else ([1] if do_sl  else [])
+    # HTTP 200 mais 0 annonces parsées = sondage échoué (Datadome partiel) → page 1 en erreur
+    err_lbc: list[int] = ([] if (r_lbc["status"] == 200 and lbc_total > 0)
+                          else ([1] if do_lbc else []))
+    err_sl:  list[int] = ([] if (r_sl["status"]  == 200 and sl_total  > 0)
+                          else ([1] if do_sl  else []))
+
+    if do_lbc and lbc_total == 0 and r_lbc["status"] == 200:
+        _warn("Sondage LBC échoué — nombre de pages inconnu (HTTP 200 mais 0 annonces parsées)")
 
     # Insérer page 1 (déjà fetchée)
     if do_sl  and r_sl["status"]  == 200:
