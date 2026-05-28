@@ -545,10 +545,12 @@ def zone_state(cp):
     sf = debug_dir / f"scrape_state_{cp}_{slug}.json" if slug else None
     if sf and sf.exists():
         state = json.loads(sf.read_text(encoding="utf-8"))
-    else:
+    elif debug_dir.exists():
         matches = [f for f in debug_dir.glob(f"scrape_state_{cp}_*.json")
                    if not commune or _norm(json.loads(f.read_text()).get("commune", "")) == _norm(commune)]
         state = json.loads(matches[0].read_text(encoding="utf-8")) if matches else {}
+    else:
+        state = {}
 
     # Extraire le sl_code depuis sl_base (ex: locations=AD08FR28766)
     sl_base = state.get("sl_base") or ""
