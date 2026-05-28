@@ -520,7 +520,6 @@ async function loadAlerts() {
       return;
     }
     if (label) label.textContent = `⚠ Incomplets (${alerts.length})`;
-    if (panel && panel.classList.contains('collapsed')) panel.classList.remove('collapsed');
     list.innerHTML = alerts.map(a => {
       const parts = [];
       if (a.pages_erreur_lbc?.length) parts.push(`LBC p${a.pages_erreur_lbc.join(',')}`);
