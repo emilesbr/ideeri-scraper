@@ -4,6 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Ideeri — Dashboard</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -191,7 +193,7 @@ tr:hover td { background: #fafbfc; cursor: pointer; }
 <body>
 <div class="app">
   <aside class="sidebar">
-    <div class="sb-head">Ide<em>eri</em></div>
+    <div class="sb-head" onclick="showHome()" style="cursor:pointer;user-select:none">Ide<em>eri</em></div>
     <div id="sb-running" class="sb-run-indicator running" style="display:none" onclick="restoreFromMini()">
       <span class="mini-dot running" id="sb-dot"></span>
       <span id="sb-running-text">Run en cours…</span>
@@ -208,7 +210,26 @@ tr:hover td { background: #fafbfc; cursor: pointer; }
     <div class="sb-add" onclick="openRunModal()">+ Nouvelle zone</div>
   </aside>
   <div class="main" id="main">
-    <div class="empty" style="margin-top:140px;font-size:15px">← Sélectionne une zone</div>
+    <div id="home-view">
+      <div id="entite-search-bar" style="position:absolute;top:16px;left:50%;transform:translateX(-50%);z-index:1000;width:360px">
+        <div style="position:relative">
+          <input id="entite-search-input" type="text" placeholder="Rechercher une agence…"
+            autocomplete="off"
+            style="width:100%;padding:10px 14px;border-radius:10px;border:none;
+                   box-shadow:0 2px 12px rgba(0,0,0,.18);font-size:13px;outline:none;background:#fff"
+            oninput="onEntiteSearch(this.value)"
+            onfocus="onEntiteSearch(this.value)">
+          <button id="entite-search-clear" onclick="clearEntiteSearch()"
+            style="display:none;position:absolute;right:10px;top:50%;transform:translateY(-50%);
+                   background:none;border:none;cursor:pointer;color:#a0aec0;font-size:16px;line-height:1">×</button>
+        </div>
+        <div id="entite-search-results"
+          style="display:none;background:#fff;border-radius:8px;margin-top:4px;
+                 box-shadow:0 4px 16px rgba(0,0,0,.15);max-height:260px;overflow-y:auto"></div>
+      </div>
+      <div id="map" style="height:100vh;width:100%"></div>
+    </div>
+    <div id="zone-content" style="display:none"></div>
   </div>
 </div>
 
@@ -696,6 +717,170 @@ function closeRunModal() {
   _miniSnapshot = null;
 }
 
+// ── Carte choroplèthe ────────────────────────────────────────────────────────
+let _map = null;
+let _mapData = null;
+
+async function loadMap() {
+  try {
+    const zones = await apiFetch('/map');
+    _mapData = zones;
+    _initMap();
+  } catch(e) {
+    const el = document.getElementById('map');
+    if (el) el.innerHTML = '<div class="empty" style="padding:60px;color:#718096;text-align:center">Aucune donnée — lancez un run pour commencer</div>';
+  }
+}
+
+function _initMap() {
+  const el = document.getElementById('map');
+  if (!el) return;
+  if (_map) { _map.remove(); _map = null; }
+
+  _map = L.map('map', { zoomControl: true });
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+    attribution: '© OpenStreetMap contributors © CARTO', maxZoom: 16
+  }).addTo(_map);
+
+  const zones = (_mapData || []).filter(z => z.code_insee);
+  if (!zones.length) { _map.setView([46.2, 2.2], 6); return; }
+
+  const maxBiens = Math.max(...zones.map(z => z.nb_biens || 0), 1);
+  const allLayers = [];
+
+  Promise.all(zones.map(zone =>
+    fetch(`https://geo.api.gouv.fr/communes/${zone.code_insee}?format=geojson&geometry=contour`)
+      .then(r => r.json())
+      .then(gj => {
+        const t = (zone.nb_biens || 0) / maxBiens;
+        const lyr = L.geoJSON(gj, {
+          style: { fillColor: _mapColor(t), fillOpacity: 0.7, color: '#fff', weight: 2 }
+        });
+        lyr.bindTooltip(
+          `<strong>${zone.commune}</strong> <span style="color:#718096">${zone.cp}</span><br>` +
+          `${zone.nb_biens} biens · ${zone.nb_entites} entités`,
+          { sticky: true, direction: 'top' }
+        );
+        lyr.on('click', () => selectZone(zone.cp, zone.commune));
+        lyr.addTo(_map);
+        allLayers.push(lyr);
+      })
+      .catch(() => {})
+  )).then(() => {
+    if (!allLayers.length) { _map.setView([45.7, 4.8], 10); return; }
+    try { _map.fitBounds(L.featureGroup(allLayers).getBounds().pad(0.25)); }
+    catch(_) { _map.setView([45.7, 4.8], 10); }
+  });
+}
+
+function _mapColor(t) {
+  const stops = [[255,247,237],[254,215,170],[251,146,60],[194,65,12]];
+  const i = Math.min(t, 1) * (stops.length - 1);
+  const lo = Math.floor(i), hi = Math.min(Math.ceil(i), stops.length - 1);
+  const f = i - lo;
+  const [r,g,b] = stops[lo].map((v,j) => Math.round(v + (stops[hi][j] - v) * f));
+  return `rgb(${r},${g},${b})`;
+}
+
+function showHome() {
+  currentCp = ''; currentCommune = '';
+  document.querySelectorAll('.zone-item').forEach(el => el.classList.remove('active'));
+  document.getElementById('zone-content').style.display = 'none';
+  document.getElementById('home-view').style.display = 'block';
+  if (_map) setTimeout(() => _map.invalidateSize(), 50);
+}
+
+// ── Recherche entité + carte entité ─────────────────────────────────────────
+let _entiteSearchTimer = null;
+let _currentEntite = null;
+
+async function onEntiteSearch(val) {
+  document.getElementById('entite-search-clear').style.display = val ? 'block' : 'none';
+  const box = document.getElementById('entite-search-results');
+  if (!val || val.length < 2) { box.style.display = 'none'; return; }
+  clearTimeout(_entiteSearchTimer);
+  _entiteSearchTimer = setTimeout(async () => {
+    try {
+      const results = await apiFetch(`/entites/search?q=${encodeURIComponent(val)}`);
+      if (!results.length) {
+        box.innerHTML = '<div style="padding:12px 16px;color:#a0aec0;font-size:12px">Aucun résultat</div>';
+        box.style.display = 'block';
+        return;
+      }
+      box.innerHTML = results.map(e => `
+        <div onclick="selectEntite(${JSON.stringify(JSON.stringify(e))})"
+          style="padding:10px 16px;cursor:pointer;border-bottom:1px solid #f7fafc;font-size:13px"
+          onmouseover="this.style.background='#f7fafc'" onmouseout="this.style.background=''">
+          <span style="font-weight:600">${e.nom}</span>
+          <span style="color:#a0aec0;font-size:11px;margin-left:6px">${e.type || ''}</span>
+        </div>`).join('');
+      box.style.display = 'block';
+    } catch(e) { box.style.display = 'none'; }
+  }, 250);
+}
+
+async function selectEntite(eJson) {
+  const e = JSON.parse(eJson);
+  _currentEntite = e;
+  document.getElementById('entite-search-input').value = e.nom;
+  document.getElementById('entite-search-results').style.display = 'none';
+  document.getElementById('entite-search-clear').style.display = 'block';
+  try {
+    const data = await apiFetch(`/entite/${encodeURIComponent(e.nom)}`);
+    _renderEntiteMap(e.nom, data.zones || []);
+  } catch(err) {}
+}
+
+function clearEntiteSearch() {
+  _currentEntite = null;
+  document.getElementById('entite-search-input').value = '';
+  document.getElementById('entite-search-results').style.display = 'none';
+  document.getElementById('entite-search-clear').style.display = 'none';
+  _initMap();
+}
+
+function _renderEntiteMap(nom, zones) {
+  const el = document.getElementById('map');
+  if (!el) return;
+  if (_map) { _map.remove(); _map = null; }
+
+  _map = L.map('map', { zoomControl: true });
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+    attribution: '© OpenStreetMap contributors © CARTO', maxZoom: 16
+  }).addTo(_map);
+
+  const withInsee = zones.filter(z => z.code_insee);
+  if (!withInsee.length) { _map.setView([45.7, 4.8], 10); return; }
+
+  const total = withInsee.reduce((s, z) => s + (z.nb_biens || 0), 0);
+  const maxBiens = Math.max(...withInsee.map(z => z.nb_biens || 0), 1);
+  const allLayers = [];
+
+  Promise.all(withInsee.map(zone =>
+    fetch(`https://geo.api.gouv.fr/communes/${zone.code_insee}?format=geojson&geometry=contour`)
+      .then(r => r.json())
+      .then(gj => {
+        const t = (zone.nb_biens || 0) / maxBiens;
+        const pct = total > 0 ? Math.round((zone.nb_biens / total) * 100) : 0;
+        const lyr = L.geoJSON(gj, {
+          style: { fillColor: _mapColor(t), fillOpacity: 0.75, color: '#fff', weight: 2 }
+        });
+        lyr.bindTooltip(
+          `<strong>${zone.commune}</strong> <span style="color:#718096">${zone.cp}</span><br>` +
+          `${zone.nb_biens} bien${zone.nb_biens > 1 ? 's' : ''} · ${pct}% du portefeuille`,
+          { sticky: true, direction: 'top' }
+        );
+        lyr.on('click', () => selectZone(zone.cp, zone.commune));
+        lyr.addTo(_map);
+        allLayers.push(lyr);
+      }).catch(() => {})
+  )).then(() => {
+    if (!allLayers.length) { _map.setView([45.7, 4.8], 10); return; }
+    try { _map.fitBounds(L.featureGroup(allLayers).getBounds().pad(0.25)); }
+    catch(_) { _map.setView([45.7, 4.8], 10); }
+  });
+}
+
 // ── Sidebar ─────────────────────────────────────────────────────────────────
 let _allZones = [];
 
@@ -751,8 +936,10 @@ async function selectZone(cp, commune) {
   document.querySelectorAll('.zone-item').forEach(el => el.classList.remove('active'));
   const zi = document.getElementById('zi-'+zoneId(cp, commune));
   if (zi) zi.classList.add('active');
-  document.getElementById('main').innerHTML =
-    '<div class="empty" style="margin-top:120px">Chargement…</div>';
+  document.getElementById('home-view').style.display = 'none';
+  const zc = document.getElementById('zone-content');
+  zc.style.display = 'block';
+  zc.innerHTML = '<div class="empty" style="margin-top:120px">Chargement…</div>';
   try {
     const params = commune ? `?commune=${encodeURIComponent(commune)}` : '';
     zoneData = await apiFetch('/zone/'+cp+params);
@@ -760,8 +947,7 @@ async function selectZone(cp, commune) {
     selectedEntities = new Set();
     renderZone();
   } catch(e) {
-    document.getElementById('main').innerHTML =
-      `<div class="api-err">Erreur chargement zone ${cp} : ${e.message}</div>`;
+    zc.innerHTML = `<div class="api-err">Erreur chargement zone ${cp} : ${e.message}</div>`;
   }
 }
 
@@ -791,7 +977,7 @@ function renderZone() {
     ? (rs.err_sl?.length  ? `<span style="color:#ed8936">SL ⚠${rs.err_sl.length}err</span>`   : `<span style="color:#718096">SL ✓${rs.sl_pages}p</span>`)   : '';
   const rsExtra = [rsLbc, rsSl].filter(Boolean).join(' · ');
 
-  document.getElementById('main').innerHTML = `
+  document.getElementById('zone-content').innerHTML = `
     <div class="page-head">
       <div>
         <div class="page-title">${z.commune} <span style="font-weight:400;font-size:16px;color:#718096">${z.cp}</span></div>
@@ -889,8 +1075,9 @@ function setSort(col) {
 
 // ── Vue entité ───────────────────────────────────────────────────────────────
 async function showEntite(encodedNom) {
-  document.getElementById('main').innerHTML =
-    '<div class="empty" style="margin-top:120px">Chargement…</div>';
+  const zc = document.getElementById('zone-content');
+  zc.style.display = 'block';
+  zc.innerHTML = '<div class="empty" style="margin-top:120px">Chargement…</div>';
   try {
     const e = await apiFetch('/entite/'+encodedNom);
     const nom = decodeURIComponent(encodedNom);
@@ -916,7 +1103,7 @@ async function showEntite(encodedNom) {
       trendTxt,
     ].filter(Boolean).join(' · ');
 
-    document.getElementById('main').innerHTML = `
+    document.getElementById('zone-content').innerHTML = `
       <div class="page-head">
         <div>
           <div style="color:#3182ce;cursor:pointer;font-size:13px;margin-bottom:10px"
@@ -984,7 +1171,7 @@ async function showEntite(encodedNom) {
         </div>
       </div>`;
   } catch(err) {
-    document.getElementById('main').innerHTML =
+    document.getElementById('zone-content').innerHTML =
       `<div class="api-err">Erreur chargement entité : ${err.message}</div>`;
   }
 }
@@ -1245,7 +1432,15 @@ async function checkActiveRun() {
 
 loadZones();
 loadAlerts();
+loadMap();
 checkActiveRun();
+
+document.addEventListener('click', e => {
+  const bar = document.getElementById('entite-search-bar');
+  if (bar && !bar.contains(e.target)) {
+    document.getElementById('entite-search-results').style.display = 'none';
+  }
+});
 </script>
 </body>
 </html>

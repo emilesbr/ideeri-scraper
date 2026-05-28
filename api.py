@@ -395,6 +395,76 @@ def zone(cp):
 
 
 # ---------------------------------------------------------------------------
+# GET /api/map  — données agrégées par code INSEE pour la carte
+# ---------------------------------------------------------------------------
+
+@app.route("/api/map")
+def map_data():
+    sb = _sb()
+    zones = sb.table("zones_ref").select("*").execute().data
+    rows  = sb.table("annonces").select("code_insee, bien_id, entite_id, est_active") \
+              .eq("est_active", True).execute().data
+
+    by_insee: dict[str, dict] = {}
+    for z in zones:
+        insee = z["code_insee"]
+        by_insee[insee] = {
+            "code_insee":         insee,
+            "cp":                 z["cp"],
+            "commune":            z["commune_officielle"],
+            "nb_annonces":        0,
+            "nb_biens":           0,
+            "nb_entites":         0,
+        }
+
+    for r in rows:
+        insee = r.get("code_insee")
+        if not insee or insee not in by_insee:
+            continue
+        by_insee[insee]["nb_annonces"] += 1
+
+    # nb_biens et nb_entites : agrégation déduplication
+    from collections import defaultdict
+    biens_by_insee:   dict[str, set] = defaultdict(set)
+    entites_by_insee: dict[str, set] = defaultdict(set)
+    for r in rows:
+        insee = r.get("code_insee")
+        if not insee or insee not in by_insee:
+            continue
+        if r.get("bien_id"):
+            biens_by_insee[insee].add(r["bien_id"])
+        if r.get("entite_id"):
+            entites_by_insee[insee].add(r["entite_id"])
+
+    for insee, d in by_insee.items():
+        d["nb_biens"]   = len(biens_by_insee[insee])
+        d["nb_entites"] = len(entites_by_insee[insee])
+
+    return jsonify(list(by_insee.values()))
+
+
+# ---------------------------------------------------------------------------
+# GET /api/entites/search?q=xxx
+# ---------------------------------------------------------------------------
+
+@app.route("/api/entites/search")
+def entites_search():
+    q = request.args.get("q", "").strip()
+    if len(q) < 2:
+        return jsonify([])
+    sb = _sb()
+    rows = sb.table("entites") \
+             .select("id, nom_commercial, type_entite") \
+             .ilike("nom_commercial", f"%{q}%") \
+             .order("nom_commercial") \
+             .limit(20).execute().data
+    return jsonify([
+        {"id": r["id"], "nom": r["nom_commercial"], "type": r.get("type_entite")}
+        for r in rows
+    ])
+
+
+# ---------------------------------------------------------------------------
 # GET /api/entite/<nom>
 # ---------------------------------------------------------------------------
 
@@ -402,7 +472,7 @@ def zone(cp):
 def entite(nom):
     sb = _sb()
     rows = sb.table("annonces") \
-             .select("code_postal, commune, source, bien_id, prix_affiche, surface, titre, dpe") \
+             .select("code_postal, commune, code_insee, source, bien_id, prix_affiche, surface, titre, dpe") \
              .eq("nom_commercial", nom).eq("est_active", True).execute().data
 
     # Agréger par CP
@@ -410,7 +480,9 @@ def entite(nom):
     for r in rows:
         cp = r["code_postal"]
         if cp not in cp_map:
-            cp_map[cp] = {"commune": r.get("commune"), "nb_lbc": 0, "nb_sl": 0, "biens": set()}
+            cp_map[cp] = {"commune": r.get("commune"), "code_insee": r.get("code_insee"), "nb_lbc": 0, "nb_sl": 0, "biens": set()}
+        if not cp_map[cp].get("code_insee") and r.get("code_insee"):
+            cp_map[cp]["code_insee"] = r["code_insee"]
         if r["source"] == "lbc":
             cp_map[cp]["nb_lbc"] += 1
         else:
@@ -425,11 +497,12 @@ def entite(nom):
         zones_out.append({
             "cp":                cp,
             "commune":           v["commune"],
-            "nb_mandats":        len(v["biens"]),   # mandats de cette entité sur cette zone
+            "code_insee":        v.get("code_insee"),
+            "nb_mandats":        len(v["biens"]),
             "nb_biens":          len(v["biens"]),
             "nb_lbc":            v["nb_lbc"],
             "nb_seloger":        v["nb_sl"],
-            "total_mandats_zone": nb_mandats_zone,  # total tous opérateurs sur cette zone
+            "total_mandats_zone": nb_mandats_zone,
         })
     zones_out.sort(key=lambda x: x["nb_mandats"], reverse=True)
 
