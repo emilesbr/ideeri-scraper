@@ -271,7 +271,7 @@ tr:hover td { background: #fafbfc; cursor: pointer; }
     </div>
     <div class="mini-bar-btns">
       <button class="mini-btn" onclick="event.stopPropagation();restoreFromMini()" title="Agrandir">⬜</button>
-      <button class="mini-btn" onclick="event.stopPropagation();closeMini()" title="Fermer">×</button>
+      <button class="mini-btn" id="mini-close-btn" onclick="event.stopPropagation();closeMini()" title="Fermer" style="display:none">×</button>
     </div>
   </div>
 </div>
@@ -294,6 +294,7 @@ let selectedEntities = new Set();
 
 // ── Mini-bar (modal réduit) ──────────────────────────────────────────────────
 let _miniTarget = null;
+let _miniRunning = false;
 
 function minimizeModal(target) {
   _miniTarget = target;
@@ -311,6 +312,8 @@ function minimizeModal(target) {
   document.getElementById('mini-title').textContent  = `Run — ${label}`;
   document.getElementById('mini-status').innerHTML   = '<span class="mini-dot running" id="mini-dot"></span>En cours…';
   document.getElementById('mini-bar').style.display  = 'block';
+  document.getElementById('mini-close-btn').style.display = 'none';
+  _miniRunning = true;
 }
 
 function restoreFromMini() {
@@ -321,11 +324,15 @@ function restoreFromMini() {
 
 function closeMini() {
   document.getElementById('mini-bar').style.display = 'none';
-  document.getElementById('sb-running').style.display = 'none';
-  _miniTarget = null;
+  if (!_miniRunning) {
+    document.getElementById('sb-running').style.display = 'none';
+    _miniTarget = null;
+  }
 }
 
 function _miniDone(ok) {
+  _miniRunning = false;
+  document.getElementById('mini-close-btn').style.display = 'inline';
   // Mini-bar
   const dot = document.getElementById('mini-dot');
   if (dot) dot.className = `mini-dot ${ok ? 'done' : 'error'}`;
