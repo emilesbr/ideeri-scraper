@@ -793,6 +793,7 @@ function showHome() {
 // ── Recherche entité + carte entité ─────────────────────────────────────────
 let _entiteSearchTimer = null;
 let _currentEntite = null;
+let _entiteResults = [];
 
 async function onEntiteSearch(val) {
   document.getElementById('entite-search-clear').style.display = val ? 'block' : 'none';
@@ -802,13 +803,14 @@ async function onEntiteSearch(val) {
   _entiteSearchTimer = setTimeout(async () => {
     try {
       const results = await apiFetch(`/entites/search?q=${encodeURIComponent(val)}`);
+      _entiteResults = results;
       if (!results.length) {
         box.innerHTML = '<div style="padding:12px 16px;color:#a0aec0;font-size:12px">Aucun résultat</div>';
         box.style.display = 'block';
         return;
       }
-      box.innerHTML = results.map(e => `
-        <div onclick="selectEntite(${JSON.stringify(JSON.stringify(e))})"
+      box.innerHTML = results.map((e, i) => `
+        <div onclick="selectEntite(${i})"
           style="padding:10px 16px;cursor:pointer;border-bottom:1px solid #f7fafc;font-size:13px"
           onmouseover="this.style.background='#f7fafc'" onmouseout="this.style.background=''">
           <span style="font-weight:600">${e.nom}</span>
@@ -819,8 +821,8 @@ async function onEntiteSearch(val) {
   }, 250);
 }
 
-async function selectEntite(eJson) {
-  const e = JSON.parse(eJson);
+async function selectEntite(idx) {
+  const e = _entiteResults[idx];
   _currentEntite = e;
   document.getElementById('entite-search-input').value = e.nom;
   document.getElementById('entite-search-results').style.display = 'none';
