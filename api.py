@@ -485,8 +485,9 @@ def incomplete():
     try:
         sb = _sb()
         # Dernier run par CP (tous statuts)
-        all_runs = sb.table("runs").select("code_postal, commune, scraped_at, statut") \
-                     .order("scraped_at", desc=True).limit(100).execute().data
+        all_runs = sb.table("runs").select(
+            "code_postal, commune, scraped_at, statut, pages_erreur_lbc, pages_erreur_sl"
+        ).order("scraped_at", desc=True).limit(100).execute().data
 
         # Pour chaque CP, garder le dernier run — s'il est en erreur/running, alerter
         latest_per_cp: dict[str, dict] = {}
@@ -496,15 +497,31 @@ def incomplete():
                 latest_per_cp[cp] = r
 
         for cp, r in latest_per_cp.items():
-            if r.get("statut") in ("error", "running") and cp not in seen_cps:
+            if cp in seen_cps:
+                continue
+            statut    = r.get("statut")
+            err_lbc   = r.get("pages_erreur_lbc") or []
+            err_sl    = r.get("pages_erreur_sl")  or []
+            if statut in ("error", "running"):
                 result.append({
-                    "cp":              cp,
-                    "commune":         r.get("commune") or cp,
+                    "cp":               cp,
+                    "commune":          r.get("commune") or cp,
                     "pages_erreur_lbc": [],
                     "pages_erreur_sl":  [],
-                    "statut":          r.get("statut"),
-                    "date":            r["scraped_at"][:16].replace("T", " "),
-                    "source":          "run_erreur",
+                    "statut":           statut,
+                    "date":             r["scraped_at"][:16].replace("T", " "),
+                    "source":           "run_erreur",
+                })
+                seen_cps.add(cp)
+            elif err_lbc or err_sl:
+                result.append({
+                    "cp":               cp,
+                    "commune":          r.get("commune") or cp,
+                    "pages_erreur_lbc": err_lbc,
+                    "pages_erreur_sl":  err_sl,
+                    "statut":           statut,
+                    "date":             r["scraped_at"][:16].replace("T", " "),
+                    "source":           "run_incomplet",
                 })
                 seen_cps.add(cp)
     except Exception:
