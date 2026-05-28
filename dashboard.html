@@ -295,9 +295,17 @@ let selectedEntities = new Set();
 // ── Mini-bar (modal réduit) ──────────────────────────────────────────────────
 let _miniTarget = null;
 let _miniRunning = false;
+let _miniSnapshot = null; // snapshot du contexte sauvegardé au minimize
 
 function minimizeModal(target) {
   _miniTarget = target;
+  // Snapshot du contexte courant pour restauration fidèle
+  _miniSnapshot = {
+    logHtml:  document.getElementById('log-content').innerHTML,
+    title:    document.getElementById('run-title').textContent,
+    cp:       _runCp,
+    commune:  _runCommune,
+  };
   document.getElementById('run-overlay').classList.remove('open');
   const label = _runMode === 'existing'
     ? `${_runCommune} ${_runCp}`
@@ -318,6 +326,20 @@ function minimizeModal(target) {
 
 function restoreFromMini() {
   if (!_miniTarget) return;
+  // Restaurer le contexte sauvegardé, même si openRunModal a été appelé entre-temps
+  if (_miniSnapshot) {
+    _runCp      = _miniSnapshot.cp;
+    _runCommune = _miniSnapshot.commune;
+    document.getElementById('run-title').textContent        = _miniSnapshot.title;
+    document.getElementById('log-content').innerHTML        = _miniSnapshot.logHtml;
+    document.getElementById('run-log').style.display        = 'block';
+    document.getElementById('run-new-form').style.display   = 'none';
+    document.getElementById('run-existing-form').style.display = 'none';
+    document.getElementById('run-minimize-btn').style.display  = _miniRunning ? 'inline' : 'none';
+    document.getElementById('run-accept-btn').style.display    = 'none';
+    const btn = document.getElementById('run-action-btn');
+    btn.style.display = 'none';
+  }
   document.getElementById('run-overlay').classList.add('open');
   document.getElementById('mini-bar').style.display = 'none';
 }
@@ -622,9 +644,11 @@ function closeRunModal() {
   if (_miniRunning) { minimizeModal('run'); return; }
   document.getElementById('run-overlay').classList.remove('open');
   document.getElementById('run-minimize-btn').style.display = 'none';
+  document.getElementById('run-action-btn').style.display = 'inline';
   document.getElementById('sb-running').style.display = 'none';
   document.getElementById('mini-bar').style.display = 'none';
   _miniTarget = null;
+  _miniSnapshot = null;
 }
 
 // ── Sidebar ─────────────────────────────────────────────────────────────────
