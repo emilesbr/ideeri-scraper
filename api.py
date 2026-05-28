@@ -3,12 +3,12 @@ api.py — API Flask pour le dashboard Ideeri
 Usage : python3 api.py  → localhost:5000
 """
 
-import json, os, re, sys, threading, unicodedata
+import base64, json, os, queue, re, sys, threading, unicodedata
 from datetime import datetime, timezone, timedelta
 import subprocess
 from pathlib import Path
 from dotenv import load_dotenv
-from flask import Flask, jsonify, Response, request, stream_with_context
+from flask import Flask, jsonify, Response, request, stream_with_context, send_file
 from flask_cors import CORS
 from supabase import create_client
 
@@ -17,7 +17,67 @@ app = Flask(__name__)
 CORS(app)
 HERE = Path(__file__).parent
 
+
+@app.before_request
+def _check_auth():
+    pwd = os.environ.get("DASHBOARD_PASSWORD", "")
+    if not pwd:
+        return  # Auth désactivée si variable absente (usage local)
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Basic "):
+        try:
+            user_pwd = base64.b64decode(auth[6:]).decode()
+            _, p = user_pwd.split(":", 1)
+            if p == pwd:
+                return
+        except Exception:
+            pass
+    return Response(
+        "Accès restreint",
+        401,
+        {"WWW-Authenticate": 'Basic realm="Ideeri Dashboard"'},
+    )
+
+
+@app.route("/")
+def index():
+    return send_file(HERE / "dashboard.html")
+
 _ANSI = re.compile(r"\033\[[0-9;]*m")
+
+# Logs accumulés en mémoire par CP (survivent à la déconnexion SSE du browser)
+_run_logs: dict[str, list[str]] = {}
+_run_done: dict[str, bool | None] = {}  # None = en cours, True = ok, False = erreur
+
+
+def _stream_proc(proc, cp: str, q: "queue.Queue[str | None]") -> None:
+    """Thread dédié : lit stdout du subprocess et accumule dans _run_logs[cp]."""
+    for line in proc.stdout:
+        line = _strip_ansi(line.rstrip())
+        if line:
+            _run_logs[cp].append(line)
+            q.put(line)
+    proc.wait()
+    _run_done[cp] = (proc.returncode == 0)
+    q.put(None)
+
+
+def _make_sse_generator(proc, cp: str):
+    """Générateur SSE qui lit depuis la queue du thread _stream_proc."""
+    _run_logs[cp] = []
+    _run_done[cp] = None
+    q: queue.Queue = queue.Queue()
+    threading.Thread(target=_stream_proc, args=(proc, cp, q), daemon=True).start()
+    while True:
+        try:
+            item = q.get(timeout=25)
+        except queue.Empty:
+            yield ": keepalive\n\n"
+            continue
+        if item is None:
+            yield f"data: {json.dumps('__DONE__')}\n\n"
+            break
+        yield f"data: {json.dumps(item)}\n\n"
 
 
 def _sb():
@@ -442,7 +502,6 @@ def run_pipeline():
             cwd=str(HERE),
         )
 
-        # Répond "o" à toutes les confirmations interactives de pipeline.py
         def _feed_stdin():
             try:
                 proc.stdin.write("o\no\no\no\n")
@@ -452,20 +511,32 @@ def run_pipeline():
                 pass
 
         threading.Thread(target=_feed_stdin, daemon=True).start()
-
-        for line in proc.stdout:
-            line = _strip_ansi(line.rstrip())
-            if line:
-                yield f"data: {json.dumps(line)}\n\n"
-
-        proc.wait()
-        yield f"data: {json.dumps('__DONE__')}\n\n"
+        yield from _make_sse_generator(proc, cp)
 
     return Response(
         stream_with_context(generate()),
         mimetype="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/run/<cp>/logs  — logs accumulés (pour reconnexion après reload)
+# ---------------------------------------------------------------------------
+
+@app.route("/api/run/<cp>/logs")
+def run_logs_endpoint(cp):
+    from_idx = max(0, int(request.args.get("from", 0)))
+    if cp not in _run_logs:
+        return jsonify({"lines": [], "total": 0, "done": None, "tracked": False})
+    lines = _run_logs[cp]
+    done  = _run_done.get(cp)
+    return jsonify({
+        "lines":   lines[from_idx:],
+        "total":   len(lines),
+        "done":    done,
+        "tracked": True,
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -689,14 +760,7 @@ def retry_zone(cp):
                 pass
 
         threading.Thread(target=_feed_stdin, daemon=True).start()
-
-        for line in proc.stdout:
-            line = _strip_ansi(line.rstrip())
-            if line:
-                yield f"data: {json.dumps(line)}\n\n"
-
-        proc.wait()
-        yield f"data: {json.dumps('__DONE__')}\n\n"
+        yield from _make_sse_generator(proc, cp)
 
     return Response(
         stream_with_context(generate()),
@@ -708,4 +772,5 @@ def retry_zone(cp):
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    app.run(debug=False, port=5000, threaded=True)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(debug=False, host="0.0.0.0", port=port, threaded=True)

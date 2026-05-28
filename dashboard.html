@@ -277,7 +277,7 @@ tr:hover td { background: #fafbfc; cursor: pointer; }
 </div>
 
 <script>
-const API = 'http://localhost:5000/api';
+const API = '/api';
 let currentCp = '';
 let currentCommune = '';
 let sortCol = 'mandats';
@@ -294,6 +294,8 @@ let selectedEntities = new Set();
 
 // ── Mini-bar (modal réduit) ──────────────────────────────────────────────────
 let _miniTarget = null;
+let _logPoller  = null;
+let _logIdx     = 0;
 let _miniRunning = false;
 let _miniSnapshot = null; // snapshot du contexte sauvegardé au minimize
 
@@ -352,9 +354,52 @@ function closeMini() {
   }
 }
 
+function _startLogPoller(cp) {
+  if (_logPoller) clearInterval(_logPoller);
+  if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
+  _logIdx = 0;
+  if (_miniSnapshot) _miniSnapshot.logHtml = '';
+
+  const tick = async () => {
+    try {
+      const data = await apiFetch(`/run/${cp}/logs?from=${_logIdx}`);
+      if (data.lines && data.lines.length) {
+        let fragment = '';
+        data.lines.forEach(line => {
+          const cls = line.includes('✓')||line.includes('OK')||line.includes('Terminé') ? 'l-ok'
+            : line.includes('✗')||line.includes('ERR')||line.includes('ECHEC') ? 'l-err'
+            : line.includes('⚠')||line.includes('WARN') ? 'l-warn' : '';
+          fragment += `<div class="${cls}">${htmlEsc(line)}</div>`;
+        });
+        _logIdx += data.lines.length;
+        if (_miniSnapshot) _miniSnapshot.logHtml += fragment;
+        const log = document.getElementById('log-content');
+        if (log) { log.insertAdjacentHTML('beforeend', fragment); log.scrollTop = log.scrollHeight; }
+      }
+      if (data.done !== null) {
+        clearInterval(_logPoller); _logPoller = null;
+        _miniDone(data.done === true);
+        loadZones(); loadAlerts();
+      }
+    } catch(_) {}
+  };
+
+  tick();
+  _logPoller = setInterval(tick, 1500);
+}
+
+async function _startLogOrRunPoller(cp) {
+  try {
+    const data = await apiFetch(`/run/${cp}/logs`);
+    if (data.tracked) { _startLogPoller(cp); return; }
+  } catch(_) {}
+  _startRunPoller(cp);
+}
+
 function _miniDone(ok) {
   _miniRunning = false;
   localStorage.removeItem('active_run');
+  if (_logPoller) { clearInterval(_logPoller); _logPoller = null; }
   document.getElementById('mini-close-btn').style.display = 'inline';
   // Mini-bar
   const dot = document.getElementById('mini-dot');
@@ -969,7 +1014,7 @@ async function startRun() {
     body = { commune, lbc_pages: lbcPages, sl_pages: slPages };
   }
 
-  localStorage.setItem('active_run', JSON.stringify({cp, commune, mode: _runMode}));
+  localStorage.setItem('active_run', JSON.stringify({cp, commune, mode: _runMode, startedAt: Date.now()}));
 
   document.getElementById('run-new-form').style.display      = 'none';
   document.getElementById('run-existing-form').style.display = 'none';
@@ -1139,6 +1184,11 @@ function _showRunIndicator(cp, commune) {
   if (!_miniSnapshot) {
     _miniSnapshot = { logHtml: `<div style="color:#a0aec0;font-size:12px;padding:8px">Run détecté en cours — log non disponible (run lancé hors dashboard)</div>`, title: `▶ Run en cours — ${label}`, cp, commune };
   }
+  // Restaurer la mini-bar (tab en bas) — perdue au rechargement
+  document.getElementById('mini-title').textContent  = `Run — ${label}`;
+  document.getElementById('mini-status').innerHTML   = '<span class="mini-dot running" id="mini-dot"></span>En cours…';
+  document.getElementById('mini-bar').style.display  = 'block';
+  document.getElementById('mini-close-btn').style.display = 'none';
 }
 
 function _startRunPoller(cp) {
@@ -1147,11 +1197,16 @@ function _startRunPoller(cp) {
     try {
       const runs = await apiFetch('/runs');
       const latest = runs.find(r => r.cp === cp);
-      if (!latest || latest.statut !== 'running') {
-        clearInterval(_pollTimer); _pollTimer = null;
-        _miniDone(latest?.statut === 'ok');
-        loadZones(); loadAlerts();
-      }
+      if (!latest || latest.statut === 'running') return;
+      // Ne pas s'arrêter sur un ancien run antérieur à notre démarrage
+      const saved = localStorage.getItem('active_run');
+      let t0 = 0;
+      try { t0 = JSON.parse(saved || '{}').startedAt || 0; } catch(_) {}
+      const latestTs = new Date(latest.date.replace(' ', 'T') + 'Z').getTime();
+      if (t0 && latestTs < t0) return; // scraping encore en cours, pas de ligne DB pour notre run
+      clearInterval(_pollTimer); _pollTimer = null;
+      _miniDone(latest.statut === 'ok');
+      loadZones(); loadAlerts();
     } catch(_) {}
   }, 3000);
 }
@@ -1159,15 +1214,31 @@ function _startRunPoller(cp) {
 async function checkActiveRun() {
   try {
     const runs = await apiFetch('/runs');
-    // 1. Run en cours détecté en base (lancé depuis terminal ou dashboard)
+    // 1. Run 'running' détecté en DB (lancé depuis terminal ou phase transform)
     const activeDb = runs.find(r => r.statut === 'running');
     if (activeDb) {
-      localStorage.setItem('active_run', JSON.stringify({cp: activeDb.cp, commune: activeDb.commune}));
+      localStorage.setItem('active_run', JSON.stringify({cp: activeDb.cp, commune: activeDb.commune, startedAt: Date.now()}));
       _showRunIndicator(activeDb.cp, activeDb.commune);
-      _startRunPoller(activeDb.cp);
+      await _startLogOrRunPoller(activeDb.cp);
       return;
     }
-    // 2. Pas de run 'running' en base — nettoyer localStorage si périmé
+    // 2. Fallback localStorage — run en phase scraping (pas encore de ligne dans runs)
+    const saved = localStorage.getItem('active_run');
+    if (saved) {
+      try {
+        const {cp, commune, startedAt} = JSON.parse(saved);
+        if (cp && commune) {
+          const latestForCp = runs.find(r => r.cp === cp);
+          const latestTs = latestForCp ? new Date(latestForCp.date.replace(' ', 'T') + 'Z').getTime() : 0;
+          const t0 = startedAt || (Date.now() - 7200000);
+          if (!latestForCp || latestTs < t0) {
+            _showRunIndicator(cp, commune);
+            await _startLogOrRunPoller(cp);
+            return;
+          }
+        }
+      } catch(_) {}
+    }
     localStorage.removeItem('active_run');
   } catch(_) {}
 }
