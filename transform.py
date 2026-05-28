@@ -446,6 +446,7 @@ def upsert_annonce(ann: dict, entite_id: str | None, run_id: int, scraped_at: st
             "nb_pieces":           ann.get("nb_pieces"),
             "code_postal":         ann.get("code_postal"),
             "commune":             ann.get("commune"),
+            "code_insee":          ann.get("code_insee"),
             "quartier_calcule":    ann.get("quartier"),
             "url_annonce":         ann.get("url_annonce"),
             "date_publication":    ann.get("date_publication"),
@@ -481,9 +482,11 @@ def upsert_annonce(ann: dict, entite_id: str | None, run_id: int, scraped_at: st
         "est_active":        True,
     }
 
-    # commune : peut être normalisée après coup (ex: "Lyon" → "Lyon 1er Arrondissement")
+    # commune + code_insee : normalisables après coup
     if ann.get("commune") and ann["commune"] != row.get("commune"):
         updates["commune"] = ann["commune"]
+    if ann.get("code_insee") and not row.get("code_insee"):
+        updates["code_insee"] = ann["code_insee"]
 
     # type_bien : corrigible si le parseur s'améliore (villa/pavillon non détectés par titre)
     if ann.get("type_bien") and ann["type_bien"] != row.get("type_bien"):
@@ -742,8 +745,8 @@ def cross_entity_match(code_postal: str, commune: str = "") -> dict:
 # Main
 # ---------------------------------------------------------------------------
 
-def _load_commune_officielle(code_postal: str, commune: str) -> str:
-    """Lit commune_officielle depuis le scrape_state si disponible."""
+def _load_zone_ref(code_postal: str, commune: str) -> dict:
+    """Lit commune_officielle et code_insee depuis le scrape_state."""
     here = Path(__file__).parent / "debug"
     slug = re.sub(r"[^a-z0-9]+", "_",
                   "".join(c for c in unicodedata.normalize("NFKD", commune.lower())
@@ -754,10 +757,14 @@ def _load_commune_officielle(code_postal: str, commune: str) -> str:
         sf = candidates[0] if candidates else None
     if sf and sf.exists():
         try:
-            return json.loads(sf.read_text(encoding="utf-8")).get("commune_officielle") or commune
+            d = json.loads(sf.read_text(encoding="utf-8"))
+            return {
+                "commune_officielle": d.get("commune_officielle") or commune,
+                "code_insee":         d.get("code_insee") or "",
+            }
         except Exception:
             pass
-    return commune
+    return {"commune_officielle": commune, "code_insee": ""}
 
 
 def run_transform(code_postal: str, commune: str = "",
@@ -767,7 +774,21 @@ def run_transform(code_postal: str, commune: str = "",
                   sl_total_attendu:  int | None = None) -> None:
     t0 = time.time()
     scraped_at = datetime.now(timezone.utc).isoformat()
-    commune_officielle = _load_commune_officielle(code_postal, commune)
+    zone_ref           = _load_zone_ref(code_postal, commune)
+    commune_officielle = zone_ref["commune_officielle"]
+    code_insee         = zone_ref["code_insee"]
+
+    # Upsert zones_ref (table de correspondance INSEE)
+    if code_insee:
+        try:
+            _sb_execute(sb.table("zones_ref").upsert({
+                "code_insee":         code_insee,
+                "cp":                 code_postal,
+                "commune":            commune,
+                "commune_officielle": commune_officielle,
+            }, on_conflict="code_insee"))
+        except Exception as e:
+            print(f"  ⚠ zones_ref upsert ignoré : {e}")
     print(f"\n=== Transform {code_postal} {commune} ===")
 
     # Créer le run avec statut 'running' — mis à jour à la fin
@@ -813,10 +834,11 @@ def run_transform(code_postal: str, commune: str = "",
             for row in rows:
                 raw = row.get("data_brute", {})
                 ads = parser(raw)
-                # Normalise commune LBC ("Lyon" → "Lyon 1er arrondissement")
-                if source == "lbc":
-                    for ann in ads:
+                # Normalise commune + injecte code_insee sur toutes les annonces
+                for ann in ads:
+                    if source == "lbc":
                         ann["commune"] = commune_officielle
+                    ann["code_insee"] = code_insee
                 print(f"    page {raw.get('_meta',{}).get('page','?')} → {len(ads)} annonces")
 
                 for ann in ads:
