@@ -5,7 +5,9 @@
   "sl_base": null,
   "lbc_pages": 6,
   "sl_pages": 0,
-  "pages_erreur_lbc": [],
+  "lbc_scraped": [1, 2, 3, 4, 6],
+  "sl_scraped": [],
+  "pages_erreur_lbc": [5],
   "pages_erreur_sl": [],
   "scraped_at": "2026-05-27T19:38:01.080444+00:00"
 }
