@@ -43,6 +43,16 @@ def _strip_accents(s: str) -> str:
         if not unicodedata.combining(c)
     )
 
+def _norm_commune(s: str) -> str:
+    """Normalise un nom de commune pour comparaison tolérante.
+    'Lyon 1er arrondissement' → 'lyon 1'  |  'Lyon 1' → 'lyon 1'
+    """
+    s2 = _strip_accents((s or "").lower())
+    s2 = re.sub(r"[-\s]+", " ", s2).strip()
+    s2 = re.sub(r"\b(\d+)(?:er|eme|ieme|e)\b", r"\1", s2)
+    s2 = re.sub(r"\barrondissement\b", "", s2)
+    return re.sub(r"\s+", " ", s2).strip()
+
 def normalize_name(name: str) -> str:
     s = _strip_accents(name.lower())
     words = re.findall(r"[a-z0-9]+", s)
@@ -586,15 +596,16 @@ def intra_entity_match(code_postal: str, commune: str = "") -> int:
     from collections import defaultdict
     fields = (
         "id_annonce, source, type_bien, surface, prix_affiche, nb_pieces, "
-        "dpe, ges, annee_construction, entite_id, bien_id"
+        "dpe, ges, annee_construction, entite_id, bien_id, commune"
     )
     q_lbc = sb.table("annonces").select(fields).eq("code_postal", code_postal).eq("source", "lbc").eq("est_active", True).not_.is_("entite_id", "null")
     q_sl  = sb.table("annonces").select(fields).eq("code_postal", code_postal).eq("source", "seloger").eq("est_active", True).not_.is_("entite_id", "null")
-    if commune:
-        q_lbc = q_lbc.ilike("commune", commune)
-        q_sl  = q_sl.ilike("commune", commune)
     lbc = _sb_execute(q_lbc).data
     sl  = _sb_execute(q_sl).data
+    if commune:
+        nc = _norm_commune(commune)
+        lbc = [r for r in lbc if _norm_commune(r.get("commune", "")) == nc]
+        sl  = [r for r in sl  if _norm_commune(r.get("commune", "")) == nc]
     if not lbc or not sl:
         return 0
 
@@ -639,12 +650,13 @@ def cross_entity_match(code_postal: str, commune: str = "") -> dict:
     import uuid
     fields = (
         "id_annonce, source, type_bien, surface, prix_affiche, nb_pieces, "
-        "dpe, ges, annee_construction, entite_id, cluster_bien_id"
+        "dpe, ges, annee_construction, entite_id, cluster_bien_id, commune"
     )
     q = sb.table("annonces").select(fields).eq("code_postal", code_postal).eq("est_active", True).not_.is_("entite_id", "null")
-    if commune:
-        q = q.ilike("commune", commune)
     ads = _sb_execute(q).data
+    if commune:
+        nc  = _norm_commune(commune)
+        ads = [r for r in ads if _norm_commune(r.get("commune", "")) == nc]
     if len(ads) < 2:
         return {"n_clusters": 0, "n_annonces": 0}
 

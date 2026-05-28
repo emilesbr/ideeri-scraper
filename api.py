@@ -32,6 +32,18 @@ def _norm(s: str) -> str:
     return s2.strip()
 
 
+def _norm_commune(s: str) -> str:
+    """Normalise commune pour comparaison insensible aux ordinals et 'arrondissement'.
+    'Lyon 1er arrondissement' → 'lyon 1'  |  'Lyon 1' → 'lyon 1'
+    'Paris 18ème arrondissement' → 'paris 18'
+    """
+    s2 = _norm(s)
+    s2 = re.sub(r"\b(\d+)(?:er|eme|ieme|e)\b", r"\1", s2)
+    s2 = re.sub(r"\barrondissement\b", "", s2)
+    s2 = re.sub(r"\s+", " ", s2).strip()
+    return s2
+
+
 def _strip_ansi(s: str) -> str:
     return _ANSI.sub("", s)
 
@@ -83,7 +95,7 @@ def zones():
         comm = (r.get("commune") or "").strip()
         if not cp:
             continue
-        key = (cp, _norm(comm))
+        key = (cp, _norm_commune(comm))
         if key not in zones_map:
             zones_map[key] = {"cp": cp, "commune": comm, "nb_runs": 0, "latest": None}
         else:
@@ -103,7 +115,7 @@ def zones():
     result = []
     for (cp, norm_comm), v in sorted(zones_map.items()):
         nb = sum(1 for a in all_ann_by_cp.get(cp, [])
-                 if _norm(a.get("commune", "")) == norm_comm)
+                 if _norm_commune(a.get("commune", "")) == norm_comm)
         result.append({
             "cp":          cp,
             "commune":     v["commune"],
@@ -140,8 +152,11 @@ def zone(cp):
 
     rows = sb.table("annonces").select("*").eq("code_postal", cp).eq("est_active", True).execute().data
     if commune_filter:
-        norm_cf = _norm(commune_filter)
-        rows = [r for r in rows if _norm(r.get("commune", "")) == norm_cf]
+        norm_cf  = _norm_commune(commune_filter)
+        filtered = [r for r in rows if _norm_commune(r.get("commune", "")) == norm_cf]
+        if filtered:
+            rows = filtered
+        # sinon on garde toutes les annonces du CP
 
     # Vérifier que la zone existe au moins dans runs avant de renvoyer 404
     if not rows:
@@ -235,8 +250,9 @@ def zone(cp):
     # Dernier run (filtré par commune si fournie)
     all_runs = sb.table("runs").select("*").eq("code_postal", cp).order("scraped_at", desc=True).limit(50).execute().data
     if commune_filter:
-        norm_cf  = _norm(commune_filter)
-        runs_rows = [r for r in all_runs if _norm(r.get("commune", "")) == norm_cf][:5]
+        norm_cf  = _norm_commune(commune_filter)
+        runs_filtered = [r for r in all_runs if _norm_commune(r.get("commune", "")) == norm_cf]
+        runs_rows = (runs_filtered if runs_filtered else all_runs)[:5]
     else:
         runs_rows = all_runs[:5]
     last_run   = runs_rows[0]["scraped_at"][:16].replace("T", " ") if runs_rows else None
