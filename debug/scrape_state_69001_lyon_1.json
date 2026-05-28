@@ -7,15 +7,7 @@
   "sl_pages": 12,
   "lbc_scraped": [
     1,
-    2,
-    3,
-    4,
-    5,
-    6,
-    7,
-    8,
-    9,
-    10
+    5
   ],
   "sl_scraped": [
     1,
@@ -31,7 +23,7 @@
     11,
     12
   ],
-  "pages_erreur_lbc": [],
+  "pages_erreur_lbc": [2, 3, 4, 6, 7, 8, 9, 10],
   "pages_erreur_sl": [],
   "scraped_at": "2026-05-28T17:28:44.729181+00:00",
   "commune_officielle": "Lyon 1er Arrondissement",
