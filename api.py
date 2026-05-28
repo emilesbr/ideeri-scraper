@@ -423,7 +423,7 @@ def run_pipeline():
     if not cp or not commune:
         return jsonify({"error": "cp et commune requis"}), 400
 
-    cmd = [sys.executable, "pipeline.py", "run", cp, commune]
+    cmd = [sys.executable, "-u", "pipeline.py", "run", cp, commune]
     if sl_code:
         cmd += ["--sl-code", sl_code]
     if lbc_loc:
@@ -658,7 +658,7 @@ def retry_zone(cp):
     lbc_pages = body.get("lbc_pages") or []
     sl_pages  = body.get("sl_pages")  or []
 
-    cmd = [sys.executable, "pipeline.py", "retry", cp]
+    cmd = [sys.executable, "-u", "pipeline.py", "retry", cp]
     if commune:
         cmd.append(commune)
     cmd += ["--wait", str(wait)]
