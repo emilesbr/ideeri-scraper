@@ -3,40 +3,76 @@ api.py — API Flask pour le dashboard Ideeri
 Usage : python3 api.py  → localhost:5000
 """
 
-import base64, json, os, queue, re, sys, threading, unicodedata
+import hashlib, json, os, queue, re, secrets, sys, threading, unicodedata
 from datetime import datetime, timezone, timedelta
 import subprocess
 from pathlib import Path
 from dotenv import load_dotenv
-from flask import Flask, jsonify, Response, request, stream_with_context, send_file
+from flask import Flask, jsonify, Response, request, stream_with_context, send_file, redirect, make_response
 from flask_cors import CORS
 from supabase import create_client
 
 load_dotenv()
 app = Flask(__name__)
+app.secret_key = os.environ.get("SECRET_KEY", secrets.token_hex(32))
 CORS(app)
 HERE = Path(__file__).parent
+
+_LOGIN_HTML = """<!DOCTYPE html>
+<html lang="fr">
+<head><meta charset="UTF-8"><title>Ideeri — Connexion</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+     background:#f0f4f8;display:flex;align-items:center;justify-content:center;min-height:100vh}
+.card{background:#fff;border-radius:12px;padding:40px;width:320px;
+      box-shadow:0 4px 20px rgba(0,0,0,.08)}
+h1{font-size:20px;font-weight:700;margin-bottom:24px;color:#2d3748}
+input{width:100%;padding:10px 14px;border:1px solid #e2e8f0;border-radius:8px;
+      font-size:14px;margin-bottom:16px;outline:none}
+input:focus{border-color:#667eea}
+button{width:100%;padding:10px;background:#667eea;color:#fff;border:none;
+       border-radius:8px;font-size:14px;font-weight:600;cursor:pointer}
+button:hover{background:#5a67d8}
+.err{color:#e53e3e;font-size:13px;margin-bottom:12px}
+</style></head>
+<body><div class="card">
+<h1>Ideeri Dashboard</h1>
+{error}
+<form method="post" action="/login">
+<input type="password" name="password" placeholder="Mot de passe" autofocus>
+<button type="submit">Connexion</button>
+</form></div></body></html>"""
+
+
+def _auth_token() -> str:
+    pwd = os.environ.get("DASHBOARD_PASSWORD", "")
+    return hashlib.sha256(pwd.encode()).hexdigest()[:32] if pwd else ""
 
 
 @app.before_request
 def _check_auth():
     pwd = os.environ.get("DASHBOARD_PASSWORD", "")
     if not pwd:
-        return  # Auth désactivée si variable absente (usage local)
-    auth = request.headers.get("Authorization", "")
-    if auth.startswith("Basic "):
-        try:
-            user_pwd = base64.b64decode(auth[6:]).decode()
-            _, p = user_pwd.split(":", 1)
-            if p == pwd:
-                return
-        except Exception:
-            pass
-    return Response(
-        "Accès restreint",
-        401,
-        {"WWW-Authenticate": 'Basic realm="Ideeri Dashboard"'},
-    )
+        return  # Auth désactivée en local
+    if request.path in ("/login",):
+        return
+    token = _auth_token()
+    if request.cookies.get("ideeri_auth") == token:
+        return
+    return redirect("/login")
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    pwd = os.environ.get("DASHBOARD_PASSWORD", "")
+    if request.method == "POST":
+        if request.form.get("password") == pwd:
+            resp = make_response(redirect("/"))
+            resp.set_cookie("ideeri_auth", _auth_token(), max_age=7*24*3600, httponly=True, samesite="Lax")
+            return resp
+        return _LOGIN_HTML.replace("{error}", '<p class="err">Mot de passe incorrect</p>')
+    return _LOGIN_HTML.replace("{error}", "")
 
 
 @app.route("/")
