@@ -618,6 +618,7 @@ async function acceptRunIncomplete() {
 }
 
 function closeRunModal() {
+  if (_miniRunning) { minimizeModal('run'); return; }
   document.getElementById('run-overlay').classList.remove('open');
   document.getElementById('run-minimize-btn').style.display = 'none';
   document.getElementById('sb-running').style.display = 'none';
