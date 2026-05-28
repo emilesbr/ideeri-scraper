@@ -1,0 +1,11 @@
+{
+  "commune": "Ecully",
+  "cp": "69130",
+  "lbc_base": "https://www.leboncoin.fr/recherche?category=9&locations=Ecully_69130__45.77477_4.77801_2966&immo_sell_type=old&real_estate_type=2,1&owner_type=all",
+  "sl_base": null,
+  "lbc_pages": 6,
+  "sl_pages": 0,
+  "pages_erreur_lbc": [],
+  "pages_erreur_sl": [],
+  "scraped_at": "2026-05-27T19:38:01.080444+00:00"
+}
