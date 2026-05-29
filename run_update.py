@@ -47,38 +47,42 @@ LBC_LOC_OVERRIDES = {
 }
 
 COMMUNES = [
-    # (cp, commune, state_file)
-    ("69001", "Lyon 1er",                  "scrape_state_69001_lyon_1.json"),
-    ("69700", "Givors",                    "scrape_state_69700_givors.json"),
-    ("42800", "Rive-de-Gier",              "scrape_state_42800_rive_de_gier.json"),
-    ("42410", "Pélussin",                  "scrape_state_42410_verin.json"),
-    ("69260", "Charbonnières-les-Bains",   "scrape_state_69260_charbonnieres_les_bains.json"),
-    ("69130", "Écully",                    "scrape_state_69130_ecully.json"),
-    ("69290", "Craponne",                  "scrape_state_69290_craponne.json"),
-    ("69570", "Dardilly",                  "scrape_state_69570_dardilly.json"),
+    # (cp, commune, state_file, lbc_premium)
+    # lbc_premium=True : zones urbaines denses — premium_proxy + wait=10s + 1 worker
+    ("69001", "Lyon 1er",                  "scrape_state_69001_lyon_1.json",                  True),
+    ("69700", "Givors",                    "scrape_state_69700_givors.json",                  False),
+    ("42800", "Rive-de-Gier",              "scrape_state_42800_rive_de_gier.json",             False),
+    ("42410", "Pélussin",                  "scrape_state_42410_verin.json",                   False),
+    ("69260", "Charbonnières-les-Bains",   "scrape_state_69260_charbonnieres_les_bains.json", False),
+    ("69130", "Écully",                    "scrape_state_69130_ecully.json",                  True),
+    ("69290", "Craponne",                  "scrape_state_69290_craponne.json",                False),
+    ("69570", "Dardilly",                  "scrape_state_69570_dardilly.json",                False),
 ]
 
 print("\n=== PARAMÈTRES EXTRAITS ===")
-for cp, commune, state_file in COMMUNES:
+for cp, commune, state_file, lbc_premium in COMMUNES:
     sl_code, lbc_loc = _extract_params(state_file)
-    print(f"  {cp} {commune:25s} | sl_code={sl_code or 'N/A':20s} | lbc_loc={str(lbc_loc)[:50] if lbc_loc else 'N/A'}")
+    sl_code = SL_CODE_OVERRIDES.get(cp, sl_code)
+    lbc_loc = LBC_LOC_OVERRIDES.get(cp, lbc_loc)
+    mode = "URBAN (premium+1w)" if lbc_premium else "standard"
+    print(f"  {cp} {commune:25s} | sl={sl_code or 'N/A':20s} | lbc={mode}")
 
 print("\n" + "="*60)
 print("Lancement des scrapes...")
 print("="*60)
 
-for cp, commune, state_file in COMMUNES:
+for cp, commune, state_file, lbc_premium in COMMUNES:
     sl_code, lbc_loc = _extract_params(state_file)
-    # Appliquer les overrides confirmés manuellement
     sl_code = SL_CODE_OVERRIDES.get(cp, sl_code)
     lbc_loc = LBC_LOC_OVERRIDES.get(cp, lbc_loc)
+    mode_lbc = "URBAN premium+1w" if lbc_premium else "standard"
     print(f"\n{'='*60}")
-    print(f"  → {commune} ({cp})")
+    print(f"  → {commune} ({cp}) | LBC: {mode_lbc}")
     print(f"     sl_code : {sl_code or 'auto'}")
     print(f"     lbc_loc : {str(lbc_loc)[:60] if lbc_loc else 'auto'}")
     print(f"{'='*60}")
     try:
-        cmd_run(cp, commune, sl_code=sl_code, lbc_loc=lbc_loc, auto_yes=True)
+        cmd_run(cp, commune, sl_code=sl_code, lbc_loc=lbc_loc, auto_yes=True, lbc_premium=lbc_premium)
     except Exception as e:
         print(f"  ERREUR {commune} ({cp}) : {e}")
         continue

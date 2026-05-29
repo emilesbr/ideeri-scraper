@@ -106,6 +106,11 @@ def _upload_html(filepath: Path) -> None:
 _LBC_PREMIUM_PARAMS = {"render_js": "true", "premium_proxy": "true", "wait": "6000",
                        "block_resources": "true", "country_code": "fr"}
 
+# Params pour zones urbaines denses (arrondissements Lyon, Paris…) où Datadome est agressif.
+# wait=10000ms de base, premium_proxy dès le départ, 1 seul worker (moins détectable).
+_LBC_URBAN_PARAMS = {"render_js": "true", "premium_proxy": "true", "wait": "10000",
+                     "block_resources": "true", "country_code": "fr"}
+
 _GHOST_MAX_BYTES = 2000  # Datadome wrapper vide ~586o — toute réponse HTTP 200 sous ce seuil est rejetée
 
 
@@ -547,7 +552,7 @@ def _get_credits_remaining() -> int | None:
 
 def cmd_scrape(cp: str, commune: str, sl_code: str | None = None,
                source: str | None = None, lbc_loc: str | None = None,
-               auto_yes: bool = False) -> dict | None:
+               auto_yes: bool = False, lbc_premium: bool = False) -> dict | None:
     do_sl  = source in (None, "seloger")
     do_lbc = source in (None, "lbc")
     sb       = _sb()
@@ -572,12 +577,13 @@ def cmd_scrape(cp: str, commune: str, sl_code: str | None = None,
         sl_pages = max(1, math.ceil(sl_total / 30)) if sl_total else 0
         print(f"{'OK — ' + str(sl_total) + ' ann. → ' + str(sl_pages) + ' pages' if r_sl['status'] == 200 else 'ECHEC HTTP ' + str(r_sl['status'])}")
 
-    # Sonde LBC p1
+    # Sonde LBC p1 — utilise _lbc_params résolu plus bas, mais il faut le définir ici aussi
+    _lbc_params_sondage = _LBC_URBAN_PARAMS if lbc_premium else LBC_PARAMS
     lbc_ads, lbc_raw, lbc_total, lbc_pages = [], {}, 0, 0
     r_lbc = {"status": None, "html": ""}
     if do_lbc:
         print(f"  LBC p1...", end=" ", flush=True)
-        r_lbc = _fetch(f"lbc_{cp}_p1", _lbc_page(lbc_base, 1), LBC_PARAMS, timeout=180)
+        r_lbc = _fetch(f"lbc_{cp}_p1", _lbc_page(lbc_base, 1), _lbc_params_sondage, timeout=180)
         lbc_ads, lbc_raw, lbc_total = _parse_lbc(r_lbc["html"]) if r_lbc["status"] == 200 else ([], {}, 0)
         lbc_pages = max(1, math.ceil(lbc_total / 35)) if lbc_total else 0
         print(f"{'OK — ' + str(lbc_total) + ' ann. → ' + str(lbc_pages) + ' pages' if r_lbc['status'] == 200 else 'ECHEC HTTP ' + str(r_lbc['status'])}")
@@ -637,9 +643,10 @@ def cmd_scrape(cp: str, commune: str, sl_code: str | None = None,
     if do_sl:
         for p in range(2, sl_pages  + 1):
             tasks.append(("seloger", p, f"{sl_base}&page={p}",   SL_PARAMS,  45))
+    _lbc_params = _LBC_URBAN_PARAMS if lbc_premium else LBC_PARAMS
     if do_lbc:
         for p in range(2, lbc_pages + 1):
-            tasks.append(("lbc",     p, _lbc_page(lbc_base, p),  LBC_PARAMS, 180))
+            tasks.append(("lbc",     p, _lbc_page(lbc_base, p),  _lbc_params, 180))
 
     total_sl  = len(sl_ids)
     total_lbc = len(lbc_ads)
@@ -647,9 +654,9 @@ def cmd_scrape(cp: str, commune: str, sl_code: str | None = None,
     ok_lbc    = 1 if r_lbc["status"] == 200 else 0
 
     if tasks:
-        # LBC est sensible à Datadome en parallèle — limiter à 2 workers quand LBC présent
+        # lbc_premium : 1 seul worker (moins détectable par Datadome en zone urbaine dense)
         has_lbc = any(s == "lbc" for s, *_ in tasks)
-        max_w = 2 if has_lbc else 5
+        max_w = 1 if (has_lbc and lbc_premium) else (2 if has_lbc else 5)
         print(f"\n  Scraping {len(tasks)} pages restantes (max {max_w} concurrent)...\n")
         with ThreadPoolExecutor(max_workers=max_w) as ex:
             fmap = {
@@ -988,9 +995,9 @@ def cmd_transform(cp: str, commune: str,
 
 def cmd_run(cp: str, commune: str, sl_code: str | None = None,
             source: str | None = None, lbc_loc: str | None = None,
-            auto_yes: bool = False):
+            auto_yes: bool = False, lbc_premium: bool = False):
     t0 = time.time()
-    result = cmd_scrape(cp, commune, sl_code, source, lbc_loc, auto_yes=auto_yes)
+    result = cmd_scrape(cp, commune, sl_code, source, lbc_loc, auto_yes=auto_yes, lbc_premium=lbc_premium)
     if result is None:
         return
 
