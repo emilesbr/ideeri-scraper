@@ -80,6 +80,10 @@ Usage : `python3 benchmark_speed.py [cp] [commune]`
 depuis les `scrape_state_*.json`. Contient les overrides sl_code/lbc_loc confirmés.
 Usage : `python3 run_update.py`
 
+**`init_metropole_lyon.py`** — Initialise `zones_ref` avec les 59 communes de la Métropole
+de Lyon. Géocode chacune via api-adresse.data.gouv.fr pour obtenir `code_insee` + nom officiel.
+Usage : `python3 init_metropole_lyon.py` (dry-run) puis `python3 init_metropole_lyon.py --apply`
+
 **`migration_v2.sql`** — Migration idempotente à exécuter via le SQL Editor Supabase ou
 l'API Management (PAT requis, voir section 10). Crée `runs`, `entites`, alters `annonces`
 et `stg_*`.
