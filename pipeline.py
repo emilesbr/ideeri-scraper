@@ -615,15 +615,16 @@ def cmd_scrape(cp: str, commune: str, sl_code: str | None = None,
         print("  Annulé.")
         return None
 
-    # Tracking pages en erreur
-    # HTTP 200 mais 0 annonces parsées = sondage échoué (Datadome partiel) → page 1 en erreur
+    # Tracking pages en erreur.
+    # Les fantômes Datadome retournent status None depuis _fetch() — ils tombent dans le else.
+    # Ce cas residuel (status 200, 0 annonces) couvre : commune vide ou échec de parsing.
     err_lbc: list[int] = ([] if (r_lbc["status"] == 200 and lbc_total > 0)
                           else ([1] if do_lbc else []))
     err_sl:  list[int] = ([] if (r_sl["status"]  == 200 and sl_total  > 0)
                           else ([1] if do_sl  else []))
 
     if do_lbc and lbc_total == 0 and r_lbc["status"] == 200:
-        _warn("Sondage LBC échoué — nombre de pages inconnu (HTTP 200 mais 0 annonces parsées)")
+        _warn("Sondage LBC échoué — HTTP 200 mais 0 annonces parsées (commune vide ou parsing raté)")
 
     # Insérer page 1 uniquement si contenu valide — HTTP 200 avec 0 annonces = fantôme Datadome
     if do_sl  and r_sl["status"]  == 200 and sl_ids:
@@ -672,7 +673,7 @@ def cmd_scrape(cp: str, commune: str, sl_code: str | None = None,
                 ids, raw, _ = _parse_seloger(r["html"])
                 if not ids:
                     err_sl.append(p)
-                    print(f"  {Y}⚠  seloger p{p} | HTTP 200 mais 0 annonces (Datadome ?){RST}")
+                    print(f"  {Y}⚠  seloger p{p} | HTTP 200 mais 0 annonces (parsing raté ?){RST}")
                     continue
                 _insert_stg("stg_seloger", commune, cp, p, url, raw, len(ids), sb)
                 total_sl += len(ids)
@@ -681,7 +682,7 @@ def cmd_scrape(cp: str, commune: str, sl_code: str | None = None,
                 ads, raw, _ = _parse_lbc(r["html"])
                 if not ads:
                     err_lbc.append(p)
-                    print(f"  {Y}⚠  lbc     p{p} | HTTP 200 mais 0 annonces (Datadome ?){RST}")
+                    print(f"  {Y}⚠  lbc     p{p} | HTTP 200 mais 0 annonces (parsing raté ?){RST}")
                     continue
                 _insert_stg("stg_lbc", commune, cp, p, url, raw, len(ads), sb)
                 total_lbc += len(ads)
@@ -907,14 +908,14 @@ def cmd_retry(cp: str, commune: str | None = None, wait_override: int | None = N
             if src == "lbc":
                 ads, raw, _ = _parse_lbc(r["html"])
                 if not ads:
-                    print(f"  {Y}⚠  lbc     p{p} | HTTP 200 mais 0 annonces (Datadome ?){RST}")
+                    print(f"  {Y}⚠  lbc     p{p} | HTTP 200 mais 0 annonces (parsing raté ?){RST}")
                     continue
                 _insert_stg("stg_lbc",     commune, cp, p, url, raw, len(ads), sb)
                 still_err_lbc = [x for x in still_err_lbc if x != p]
             else:
                 ids, raw, _ = _parse_seloger(r["html"])
                 if not ids:
-                    print(f"  {Y}⚠  seloger p{p} | HTTP 200 mais 0 annonces (Datadome ?){RST}")
+                    print(f"  {Y}⚠  seloger p{p} | HTTP 200 mais 0 annonces (parsing raté ?){RST}")
                     continue
                 _insert_stg("stg_seloger", commune, cp, p, url, raw, len(ids), sb)
                 still_err_sl = [x for x in still_err_sl if x != p]
