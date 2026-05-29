@@ -17,15 +17,18 @@ load_dotenv()
 sb = create_client(os.environ["SUPA_URL"], os.environ["SUPA_KEY"])
 
 
+_RETRY_KEYWORDS = ("timeout", "connection", "network", "read timed out", "connect timeout", "eof occurred")
+
 def _sb_execute(query, retries: int = 3, delay: float = 2.0):
-    """Execute a Supabase query with automatic retry on network errors."""
+    """Retry uniquement sur erreurs réseau/timeout — pas sur les erreurs de données ou logique."""
     for attempt in range(retries):
         try:
             return query.execute()
         except Exception as e:
-            if attempt == retries - 1:
+            is_network = any(k in str(e).lower() for k in _RETRY_KEYWORDS)
+            if attempt == retries - 1 or not is_network:
                 raise
-            print(f"    [Supabase timeout, retry {attempt + 1}/{retries - 1}...]")
+            print(f"    [Supabase réseau, retry {attempt + 1}/{retries}...]")
             time.sleep(delay * (attempt + 1))
 
 # ---------------------------------------------------------------------------
@@ -174,6 +177,11 @@ def parse_lbc_ads(data_brute: dict) -> list[dict]:
             try: return int(v) if v else None
             except (ValueError, TypeError): return None
 
+        mandate = _lbc_attr(a, "mandate_type")
+        is_exclusive = True if mandate == "exclusive" else (False if mandate == "simple" else None)
+        ref_agence = (_lbc_attr(a, "custom_ref") or "").strip() or None
+        loc = a.get("location", {})
+
         results.append({
             "id_annonce":          f"lbc_{a.get('list_id', '')}",
             "source":              "lbc",
@@ -183,7 +191,7 @@ def parse_lbc_ads(data_brute: dict) -> list[dict]:
             "surface":             surface,
             "nb_pieces":           int(_lbc_attr(a, "rooms") or 0) or None,
             "code_postal":         cp,
-            "commune":             a.get("location", {}).get("city", ""),
+            "commune":             loc.get("city", ""),
             "url_annonce":         a.get("url", ""),
             "date_publication":    a.get("first_publication_date", "")[:10] if a.get("first_publication_date") else None,
             "sur_lbc":             True,
@@ -194,6 +202,11 @@ def parse_lbc_ads(data_brute: dict) -> list[dict]:
             "energie_budget_max":  _lbc_int(a, "annual_energy_budget_max"),
             "annee_construction":  _lbc_int(a, "building_year"),
             "etage":               _lbc_int(a, "floor_number"),
+            "is_exclusive":        is_exclusive,
+            "ref_agence":          ref_agence,
+            "lat":                 loc.get("lat"),
+            "lng":                 loc.get("lng"),
+            "gps_precision":       loc.get("origin_type"),
             "_entity": {
                 "nom":             nom,
                 "siren":           siren,
@@ -294,6 +307,10 @@ def parse_seloger_ads(data_brute: dict) -> list[dict]:
                 pass
 
         upd_raw = meta.get("updateDate", "")
+        is_excl_raw = item.get("tags", {}).get("isExclusive")
+        is_exclusive = bool(is_excl_raw) if is_excl_raw is not None else None
+        ref_agence = (item.get("rawData", {}).get("offererMarketingKey") or "").strip() or None
+
         results.append({
             "id_annonce":        f"seloger_{lid}",
             "source":            "seloger",
@@ -310,6 +327,9 @@ def parse_seloger_ads(data_brute: dict) -> list[dict]:
             "sur_lbc":           False,
             "sur_seloger":       True,
             "dpe":               item.get("energyClass"),  # 'A'–'G' ou None
+            "is_exclusive":      is_exclusive,
+            "ref_agence":        ref_agence,
+            # lat/lng absent de la SERP SeLoger (isAddressPublished=false pour ~78%)
             "_entity": {
                 "nom":              nom_agence,
                 "siren":            siren,
@@ -430,7 +450,8 @@ def upsert_annonce(ann: dict, entite_id: str | None, run_id: int, scraped_at: st
 
     existing = _sb_execute(sb.table("annonces").select(
         "id_annonce, prix_affiche, historique_prix, date_premiere_obs, run_id_premiere_obs, "
-        "dpe, ges, energie_budget_min, energie_budget_max, annee_construction, etage"
+        "dpe, ges, energie_budget_min, energie_budget_max, annee_construction, etage, "
+        "is_exclusive, ref_agence, lat, lng, gps_precision"
     ).eq("id_annonce", id_ann)).data
 
     now = scraped_at
@@ -467,6 +488,11 @@ def upsert_annonce(ann: dict, entite_id: str | None, run_id: int, scraped_at: st
             "annee_construction":  ann.get("annee_construction"),
             "etage":               ann.get("etage"),
             "date_maj_portail":    ann.get("date_maj_portail"),
+            "is_exclusive":        ann.get("is_exclusive"),
+            "ref_agence":          ann.get("ref_agence"),
+            "lat":                 ann.get("lat"),
+            "lng":                 ann.get("lng"),
+            "gps_precision":       ann.get("gps_precision"),
             "nom_commercial":      ann["_entity"].get("nom"),
             "signature_entite_bien": entity_signature(
                 ann["_entity"].get("siren"), ann["_entity"].get("type", "agence"),
@@ -503,9 +529,13 @@ def upsert_annonce(ann: dict, entite_id: str | None, run_id: int, scraped_at: st
         updates["dpe"] = ann["dpe"]
     if ann.get("ges") and not row.get("ges"):
         updates["ges"] = ann["ges"]
-    for field in ("energie_budget_min", "energie_budget_max", "annee_construction", "etage"):
-        if ann.get(field) and not row.get(field):
+    for field in ("energie_budget_min", "energie_budget_max", "annee_construction", "etage",
+                  "ref_agence", "lat", "lng", "gps_precision"):
+        if ann.get(field) is not None and row.get(field) is None:
             updates[field] = ann[field]
+    # is_exclusive : renseigner si absent (False est une valeur valide, différente de None)
+    if ann.get("is_exclusive") is not None and row.get("is_exclusive") is None:
+        updates["is_exclusive"] = ann["is_exclusive"]
 
     # date_maj_portail : toujours mis à jour (reflète la dernière modif connue sur le portail)
     if ann.get("date_maj_portail"):
@@ -529,16 +559,18 @@ def upsert_annonce(ann: dict, entite_id: str | None, run_id: int, scraped_at: st
 # ---------------------------------------------------------------------------
 
 def mark_inactive(code_postal: str, source: str, seen_ids: set[str], scraped_at: str, commune: str = "") -> int:
+    if not commune:
+        print(f"    ⚠ mark_inactive sans commune — toutes annonces {source}/{code_postal} concernées")
     q = sb.table("annonces").select("id_annonce").eq("code_postal", code_postal).eq("source", source).eq("est_active", True)
     if commune:
         q = q.ilike("commune", commune)
-    active   = _sb_execute(q).data
+    active   = _sb_execute(q.limit(10000)).data
     disparus = [r["id_annonce"] for r in active if r["id_annonce"] not in seen_ids]
-    if disparus:
+    for i in range(0, len(disparus), 200):
         _sb_execute(sb.table("annonces").update({
             "est_active":        False,
             "date_derniere_obs": scraped_at,
-        }).in_("id_annonce", disparus))
+        }).in_("id_annonce", disparus[i:i + 200]))
     return len(disparus)
 
 
@@ -577,14 +609,18 @@ def update_entity_snapshots(code_postal: str, scraped_at: str) -> None:
         total_par_entite[eid] = total_par_entite.get(eid, 0) + 1
 
     date_snap = scraped_at[:10]
+    ent_ids = list(counts.keys())
+    entites_rows = _sb_execute(
+        sb.table("entites").select("id, historique_activite").in_("id", ent_ids).limit(len(ent_ids) + 10)
+    ).data
+    entites_map = {e["id"]: e for e in entites_rows}
+
     for eid, c in counts.items():
         nb_total_cp = c["lbc"] + c["seloger"]
-        entite = _sb_execute(
-            sb.table("entites").select("historique_activite").eq("id", eid)
-        ).data
+        entite = entites_map.get(eid)
         if not entite:
             continue
-        hist = entite[0].get("historique_activite") or []
+        hist = entite.get("historique_activite") or []
         hist = [h for h in hist if h.get("date") != date_snap]
         hist.append({"date": date_snap, "nb_lbc": c["lbc"], "nb_seloger": c["seloger"], "nb_total": nb_total_cp})
         _sb_execute(sb.table("entites").update({
@@ -597,6 +633,52 @@ def update_entity_snapshots(code_postal: str, scraped_at: str) -> None:
 # Matching — deux appels sur le même score unique
 # ---------------------------------------------------------------------------
 
+def ref_match(code_postal: str, commune: str = "") -> int:
+    """Passe 0 — apparie LBC↔SeLoger par référence agence exacte (ref_agence).
+    Cas 1:1 uniquement ; les N:M tombent sur intra_entity_match.
+    Retourne le nombre de nouvelles paires créées."""
+    from collections import defaultdict
+    fields = "id_annonce, source, ref_agence, prix_affiche, entite_id, bien_id, commune, match_confidence"
+    q = (sb.table("annonces").select(fields)
+           .eq("code_postal", code_postal).eq("est_active", True)
+           .not_.is_("ref_agence", "null").limit(5000))
+    ads = _sb_execute(q).data
+    if commune:
+        nc = _norm_commune(commune)
+        ads = [r for r in ads if _norm_commune(r.get("commune", "")) == nc]
+
+    ref_to_lbc: dict = defaultdict(list)
+    ref_to_sl:  dict = defaultdict(list)
+    for a in ads:
+        (ref_to_lbc if a["source"] == "lbc" else ref_to_sl)[a["ref_agence"]].append(a)
+
+    n = 0
+    for ref in ref_to_lbc:
+        if ref not in ref_to_sl:
+            continue
+        ll, sl = ref_to_lbc[ref], ref_to_sl[ref]
+        # Seulement 1:1 — les N:M sont laissés au fuzzy
+        if len(ll) != 1 or len(sl) != 1:
+            continue
+        la, sa = ll[0], sl[0]
+        # Vérif prix ±5%
+        p1, p2 = la.get("prix_affiche"), sa.get("prix_affiche")
+        if p1 and p2 and abs(p1 - p2) / max(p1, p2) > 0.05:
+            continue
+        # Déjà matché correctement
+        if sa.get("bien_id") == la["id_annonce"]:
+            continue
+        lbc_id = la["id_annonce"]
+        _sb_execute(sb.table("annonces").update({
+            "sur_seloger": True, "match_confidence": 1.0, "bien_id": lbc_id,
+        }).eq("id_annonce", lbc_id))
+        _sb_execute(sb.table("annonces").update({
+            "sur_lbc": True, "match_confidence": 1.0, "bien_id": lbc_id,
+        }).eq("id_annonce", sa["id_annonce"]))
+        n += 1
+    return n
+
+
 def intra_entity_match(code_postal: str, commune: str = "") -> int:
     """Apparie LBC↔SeLoger de la même entité. Seuil 0.70.
     Action : sur_lbc/sur_seloger=True, bien_id = id_annonce LBC, match_confidence.
@@ -604,12 +686,12 @@ def intra_entity_match(code_postal: str, commune: str = "") -> int:
     from collections import defaultdict
     fields = (
         "id_annonce, source, type_bien, surface, prix_affiche, nb_pieces, "
-        "dpe, ges, annee_construction, entite_id, bien_id, commune"
+        "dpe, ges, annee_construction, entite_id, bien_id, commune, match_confidence"
     )
     q_lbc = sb.table("annonces").select(fields).eq("code_postal", code_postal).eq("source", "lbc").eq("est_active", True).not_.is_("entite_id", "null")
     q_sl  = sb.table("annonces").select(fields).eq("code_postal", code_postal).eq("source", "seloger").eq("est_active", True).not_.is_("entite_id", "null")
-    lbc = _sb_execute(q_lbc).data
-    sl  = _sb_execute(q_sl).data
+    lbc = _sb_execute(q_lbc.limit(5000)).data
+    sl  = _sb_execute(q_sl.limit(5000)).data
     if commune:
         nc = _norm_commune(commune)
         lbc = [r for r in lbc if _norm_commune(r.get("commune", "")) == nc]
@@ -622,6 +704,10 @@ def intra_entity_match(code_postal: str, commune: str = "") -> int:
     for a in lbc: lbc_by_ent[a["entite_id"]].append(a)
     for a in sl:  sl_by_ent[a["entite_id"]].append(a)
 
+    # Exclure les annonces déjà matchées par ref_match (match_confidence déjà posé)
+    matched_lbc: set[str] = {a["id_annonce"] for a in lbc if a.get("match_confidence") is not None}
+    matched_sl:  set[str] = {a["id_annonce"] for a in sl  if a.get("match_confidence") is not None}
+
     candidates = []
     for eid in set(lbc_by_ent) & set(sl_by_ent):
         for a in lbc_by_ent[eid]:
@@ -631,8 +717,6 @@ def intra_entity_match(code_postal: str, commune: str = "") -> int:
                     candidates.append((s, a, b))
     candidates.sort(key=lambda x: -x[0])
 
-    matched_lbc: set[str] = set()
-    matched_sl:  set[str] = set()
     n = 0
     for score, a, b in candidates:
         if a["id_annonce"] in matched_lbc or b["id_annonce"] in matched_sl:
@@ -661,7 +745,7 @@ def cross_entity_match(code_postal: str, commune: str = "") -> dict:
         "dpe, ges, annee_construction, entite_id, cluster_bien_id, commune"
     )
     q = sb.table("annonces").select(fields).eq("code_postal", code_postal).eq("est_active", True).not_.is_("entite_id", "null")
-    ads = _sb_execute(q).data
+    ads = _sb_execute(q.limit(5000)).data
     if commune:
         nc  = _norm_commune(commune)
         ads = [r for r in ads if _norm_commune(r.get("commune", "")) == nc]
@@ -700,8 +784,16 @@ def cross_entity_match(code_postal: str, commune: str = "") -> dict:
             root_dpe[ry] = "std"
 
     for i, a in enumerate(ads):
+        pa = a.get("prix_affiche")
+        ta = a.get("type_bien")
         for b in ads[i + 1:]:
             if a.get("entite_id") == b.get("entite_id"):
+                continue
+            # Pré-filtres rapides avant compute_match_score (évite ~80% des comparaisons)
+            if ta and b.get("type_bien") and ta != b["type_bien"]:
+                continue
+            pb = b.get("prix_affiche")
+            if pa and pb and abs(pa - pb) / max(pa, pb) > 0.15:
                 continue
             if compute_match_score(a, b) >= 0.80:
                 union(a["id_annonce"], b["id_annonce"])
@@ -784,7 +876,7 @@ def run_transform(code_postal: str, commune: str = "",
             _sb_execute(sb.table("zones_ref").upsert({
                 "code_insee":         code_insee,
                 "cp":                 code_postal,
-                "commune":            commune,
+                "commune":            commune_officielle,
                 "commune_officielle": commune_officielle,
             }, on_conflict="code_insee"))
         except Exception as e:
@@ -795,7 +887,7 @@ def run_transform(code_postal: str, commune: str = "",
     run_payload: dict = {
         "scraped_at":  scraped_at,
         "code_postal": code_postal,
-        "commune":     commune or code_postal,
+        "commune":     commune_officielle or code_postal,
         "source":      "all",
         "statut":      "running",
     }
@@ -816,18 +908,13 @@ def run_transform(code_postal: str, commune: str = "",
             ("seloger", "stg_seloger", parse_seloger_ads),
         ]:
             print(f"\n  [{source.upper()}]")
-            q1 = sb.table(table).select("scraped_at").eq("code_postal", code_postal)
+            q = sb.table(table).select("*").eq("code_postal", code_postal).eq("processed", False)
             if commune:
-                q1 = q1.eq("commune", commune)
-            latest = _sb_execute(q1.order("scraped_at", desc=True).limit(1)).data
-            if not latest:
-                print(f"    (aucune donnée pour {code_postal} {commune})")
+                q = q.eq("commune", commune)
+            rows = _sb_execute(q.order("scraped_at").limit(500)).data
+            if not rows:
+                print(f"    (aucune page non traitée pour {code_postal} {commune})")
                 continue
-            latest_date = latest[0]["scraped_at"][:10]
-            q2 = sb.table(table).select("*").eq("code_postal", code_postal).gte("scraped_at", latest_date)
-            if commune:
-                q2 = q2.eq("commune", commune)
-            rows = _sb_execute(q2).data
 
             seen_ids: set[str] = set()
             stg_ids: list[int] = []
@@ -836,8 +923,7 @@ def run_transform(code_postal: str, commune: str = "",
                 ads = parser(raw)
                 # Normalise commune + injecte code_insee sur toutes les annonces
                 for ann in ads:
-                    if source == "lbc":
-                        ann["commune"] = commune_officielle
+                    ann["commune"]    = commune_officielle
                     ann["code_insee"] = code_insee
                 print(f"    page {raw.get('_meta',{}).get('page','?')} → {len(ads)} annonces")
 
@@ -870,9 +956,13 @@ def run_transform(code_postal: str, commune: str = "",
 
     # Matching toujours exécuté, même si l'upsert a crashé partiellement
     try:
+        n_ref = ref_match(code_postal, commune)
+        if n_ref:
+            print(f"\n  {n_ref} paires matchées par référence agence (passe 0)")
+
         n_intra = intra_entity_match(code_postal, commune)
         if n_intra:
-            print(f"\n  {n_intra} paires intra-entité matchées (LBC↔SeLoger, seuil 0.70)")
+            print(f"  {n_intra} paires intra-entité matchées (LBC↔SeLoger, seuil 0.70)")
 
         cl = cross_entity_match(code_postal, commune)
         if cl["n_annonces"]:
@@ -906,6 +996,58 @@ def run_transform(code_postal: str, commune: str = "",
     print(f"    nouvelles    : {stats['nouvelles']}")
     print(f"    disparues    : {stats['disparues']}")
     print(f"    prix modifiés: {stats['prix_modifies']}")
+
+
+def backfill_new_fields(code_postal: str | None = None) -> None:
+    """Peuple is_exclusive, ref_agence, lat, lng, gps_precision depuis les stg_* existants.
+    À lancer une seule fois après migration_new_fields.sql.
+    Lit tous les stg_* (processed ou non) et met à jour les annonces existantes."""
+    tables = [
+        ("stg_lbc",     parse_lbc_ads),
+        ("stg_seloger", parse_seloger_ads),
+    ]
+    for table, parser in tables:
+        print(f"\n[backfill {table}]")
+        q = sb.table(table).select("data_brute, code_postal")
+        if code_postal:
+            q = q.eq("code_postal", code_postal)
+        rows = _sb_execute(q.limit(2000)).data
+
+        ann_map: dict[str, dict] = {}
+        for row in rows:
+            for ann in parser(row["data_brute"]):
+                iid = ann["id_annonce"]
+                if iid not in ann_map:
+                    ann_map[iid] = ann
+
+        print(f"  {len(ann_map)} annonces uniques dans les stg_*")
+        updated = skipped = 0
+        ids = list(ann_map.keys())
+
+        for i in range(0, len(ids), 100):
+            batch = ids[i:i + 100]
+            existing = _sb_execute(
+                sb.table("annonces").select(
+                    "id_annonce, is_exclusive, ref_agence, lat, lng, gps_precision"
+                ).in_("id_annonce", batch)
+            ).data
+
+            for row in existing:
+                iid = row["id_annonce"]
+                ann = ann_map[iid]
+                upd: dict = {}
+                if ann.get("is_exclusive") is not None and row.get("is_exclusive") is None:
+                    upd["is_exclusive"] = ann["is_exclusive"]
+                for field in ("ref_agence", "lat", "lng", "gps_precision"):
+                    if ann.get(field) is not None and row.get(field) is None:
+                        upd[field] = ann[field]
+                if upd:
+                    _sb_execute(sb.table("annonces").update(upd).eq("id_annonce", iid))
+                    updated += 1
+                else:
+                    skipped += 1
+
+        print(f"  Mis à jour : {updated} | Déjà renseignés : {skipped}")
 
 
 if __name__ == "__main__":

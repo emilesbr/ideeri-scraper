@@ -1074,6 +1074,25 @@ def cmd_enrich(refresh: bool = False, dry_run: bool = False):
     enrich(refresh=refresh, dry_run=dry_run)
 
 
+def cmd_backfill(cp: str | None = None):
+    """Peuple is_exclusive, ref_agence, lat/lng depuis les stg_* existants.
+    Lancer après migration_new_fields.sql."""
+    print(f"\n{B}=== Backfill nouveaux champs {'— ' + cp if cp else '(toutes zones)'} ==={RST}\n")
+    from transform import backfill_new_fields, ref_match, _norm_commune
+    backfill_new_fields(cp)
+    # Rejouer ref_match sur toutes les zones concernées
+    sb = _sb()
+    q = sb.table("annonces").select("code_postal, commune").eq("est_active", True)
+    if cp:
+        q = q.eq("code_postal", cp)
+    zones = {(r["code_postal"], r["commune"]) for r in q.execute().data}
+    print(f"\n  Relance ref_match sur {len(zones)} zone(s)...")
+    for zcp, zcom in sorted(zones):
+        n = ref_match(zcp, zcom)
+        if n:
+            print(f"  {zcp} {zcom} : {n} nouvelles paires ref")
+
+
 # ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
@@ -1137,6 +1156,9 @@ def main():
     p.add_argument("--all",     action="store_true", help="Ré-enrichit même les déjà traités")
     p.add_argument("--dry-run", action="store_true", dest="dry_run", help="Affiche sans écrire")
 
+    p = sub.add_parser("backfill", help="Peuple is_exclusive/ref_agence/lat/lng depuis les stg_*")
+    p.add_argument("cp", nargs="?", default=None, help="Code postal (optionnel — toutes zones si absent)")
+
     args = parser.parse_args()
 
     {
@@ -1149,6 +1171,7 @@ def main():
         "retry":     lambda: cmd_retry(args.cp, getattr(args, "commune", None), getattr(args, "wait_override", None), getattr(args, "lbc_pages_override", None), getattr(args, "sl_pages_override", None)),
         "reset":     lambda: cmd_reset(args.cp),
         "enrich":    lambda: cmd_enrich(getattr(args, "all", False), getattr(args, "dry_run", False)),
+        "backfill":  lambda: cmd_backfill(getattr(args, "cp", None)),
     }[args.cmd]()
 
 

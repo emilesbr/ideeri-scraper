@@ -32,28 +32,23 @@ ideeri/
 ├── CLAUDE.md               # Ce fichier — lu à chaque session
 ├── README.md               # Vue d'ensemble GitHub
 │
-├── pipeline.py             # Point d'entrée unique : scrape + transform + check + reset
+├── pipeline.py             # Point d'entrée unique : scrape + transform + check + reset + batch
 ├── transform.py            # Cœur du pipeline : stg_* → annonces + entites + runs
 ├── api.py                  # API Flask → localhost:5000
 ├── dashboard.html          # Dashboard SPA — ouvrir dans le navigateur
 │
-├── scrape_givors.py        # LEGACY — remplacé par pipeline.py run
-├── test_ecully.py          # Validation des paramètres ScrapingBee (référence)
-├── test_scrapingbee.py     # Benchmark 8 combinaisons de paramètres (A–H)
+├── benchmark_speed.py      # Benchmark LBC : teste wait + workers, recommande les meilleurs params
+├── run_update.py           # Re-scrape toutes les communes existantes (URLs extraites des scrape_state)
 │
 ├── migration_v2.sql        # SQL idempotent : crée runs, entites, alter annonces/stg_*
 ├── migration_sirene.sql    # SQL idempotent : colonnes enrichissement SIRENE dans entites
 ├── migration_stg_tables.sql # SQL intermédiaire (précède migration_v2)
+├── migration_batch.sql     # SQL idempotent : actif/priorite/sl_code/lbc_loc dans zones_ref + 9 arrondissements Lyon
+├── migration_new_fields.sql # SQL idempotent : is_exclusive, ref_agence, lat, lng, gps_precision dans annonces
 │
 ├── enrich_sirene.py        # Enrichissement SIRENE des entités (denomination, APE, adresse)
 │
-├── analyser_local.py       # Debug HTML local
-├── debug_page.py           # Debug page HTML brute
-├── extractor_exhaustive.py # Brouillon (remplacé par transform.py)
-├── scraper_hybride.py      # Brouillon (remplacé par pipeline.py)
-├── capture_seloger.html    # Capture HTML SeLoger référence (debug)
-│
-└── debug/                  # HTML bruts ScrapingBee (gitignorés — vider régulièrement)
+└── debug/                  # HTML bruts ScrapingBee (gitignorés) + scrape_state_*.json
 ```
 
 ### Rôle détaillé des fichiers actifs
@@ -65,7 +60,8 @@ interactives. Usage : `python3 pipeline.py run <cp> <commune> [--sl-code ...]`
 
 **`transform.py`** — **Le cœur du pipeline**. Lit `stg_lbc` et `stg_seloger`, normalise les
 annonces, gère les entités sans doublon, le suivi temporel, le DPE/GES, et le matching
-inter-portail. Appelé par `pipeline.py transform` ou directement :
+inter-portail. **Toutes les écritures en base utilisent `commune_officielle` (INSEE)** —
+jamais le nom brut saisi par l'utilisateur. Appelé par `pipeline.py transform` ou directement :
 `python3 transform.py <code_postal> [commune]`
 
 **`api.py`** — Serveur Flask qui expose les données Supabase en JSON pour le dashboard.
@@ -76,18 +72,23 @@ Endpoints : `GET /api/zones`, `GET /api/zone/<cp>`, `GET /api/entite/<nom>`,
 entités, multi-mandats, DPE), classement entités avec part de marché, mouvements de prix,
 vue détail par entité. Ouvrir dans le navigateur après avoir lancé `api.py`.
 
-**`scrape_givors.py`** — Script legacy, remplacé par `pipeline.py run`. Conservé comme
-référence de l'architecture de scraping.
+**`benchmark_speed.py`** — Teste 6 combinaisons wait/workers sur une commune cible, mesure
+taux de succès et temps total, recommande les meilleurs paramètres LBC.
+Usage : `python3 benchmark_speed.py [cp] [commune]`
 
-**`test_ecully.py`** — Script de référence qui a validé les paramètres ScrapingBee
-(premium pour SeLoger, premium pour LBC depuis mai 2026).
-
-**`test_scrapingbee.py`** — Benchmark de 8 combinaisons de paramètres (A–H). À relancer si
-la clé API change ou si un portail modifie son anti-bot.
+**`run_update.py`** — Re-scrape toutes les communes déjà en base en extrayant les URLs
+depuis les `scrape_state_*.json`. Contient les overrides sl_code/lbc_loc confirmés.
+Usage : `python3 run_update.py`
 
 **`migration_v2.sql`** — Migration idempotente à exécuter via le SQL Editor Supabase ou
 l'API Management (PAT requis, voir section 10). Crée `runs`, `entites`, alters `annonces`
 et `stg_*`.
+
+**`migration_batch.sql`** — Ajoute `actif`, `priorite`, `sl_code`, `lbc_loc` à `zones_ref`
+et insère les 9 arrondissements de Lyon (codes INSEE 69381–69389, noms format INSEE officiel).
+
+**`migration_new_fields.sql`** — Ajoute `is_exclusive`, `ref_agence`, `lat`, `lng`,
+`gps_precision` à `annonces`. LBC uniquement (SeLoger ne fournit pas de coordonnées en SERP).
 
 ---
 
@@ -588,12 +589,26 @@ python3 pipeline.py status <cp>                    # État d'une zone
 python3 pipeline.py scrape <cp> <commune>          # Scraping seul
 python3 pipeline.py transform <cp> <commune>       # Transform seul (stg_* déjà rempli)
 python3 pipeline.py run <cp> <commune>             # Scrape + transform
+python3 pipeline.py batch                          # Scrape toutes les zones actives (zones_ref actif=true)
+python3 pipeline.py batch --min-credits 500        # Arrête si < 500 crédits restants
+python3 pipeline.py batch --force                  # Re-scrape même si déjà fait aujourd'hui
 python3 pipeline.py retry <cp>                     # Re-scrape les pages manquantes d'un run incomplet
 python3 pipeline.py reset <cp>                     # Réinitialise données d'une zone
 python3 pipeline.py enrich                         # Enrichit les entités avec données SIRENE
 python3 pipeline.py enrich --all                   # Ré-enrichit même les déjà traités
 python3 pipeline.py enrich --dry-run               # Affiche sans écrire en base
 ```
+
+**Mode batch** : lit `zones_ref` (`actif=true`, trié par `priorite`). Saute les communes déjà
+scrapées aujourd'hui (check `runs`). S'arrête si quota ScrapingBee < `min_credits` (défaut 300).
+Pour activer une zone : `UPDATE zones_ref SET actif=true WHERE cp='XXXXX'`.
+
+**Optimisation vitesse LBC** :
+```bash
+python3 benchmark_speed.py [cp] [commune]   # Teste 6 combos wait/workers, recommande les meilleurs
+```
+Résultats dans `debug/benchmark_lbc_<cp>.json`. Mettre à jour `LBC_PARAMS["wait"]` et `max_workers`
+dans `pipeline.py` après validation.
 
 ### Dashboard
 
