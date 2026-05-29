@@ -106,10 +106,13 @@ def _upload_html(filepath: Path) -> None:
 _LBC_PREMIUM_PARAMS = {"render_js": "true", "premium_proxy": "true", "wait": "6000",
                        "block_resources": "true", "country_code": "fr"}
 
+_GHOST_MAX_BYTES = 2000  # Datadome wrapper vide ~586o — toute réponse HTTP 200 sous ce seuil est rejetée
+
 
 def _fetch(pid: str, url: str, params: dict, timeout: int) -> dict:
     """Fetche une URL via ScrapingBee. Backoff automatique sur HTTP 500 (wait +2000ms, 4 retries max).
-    Démarre en stealth_proxy pour LBC ; si 613, bascule sur premium_proxy."""
+    Démarre en stealth_proxy pour LBC ; si 613, bascule sur premium_proxy.
+    Un HTTP 200 < _GHOST_MAX_BYTES est traité comme un fantôme Datadome (retry + status None final)."""
     t0 = time.time()
     current_params = dict(params)
     max_attempts = 5 if "wait" in params else 1
@@ -128,11 +131,17 @@ def _fetch(pid: str, url: str, params: dict, timeout: int) -> dict:
                              params={"api_key": os.environ["SCRAPINGBEE_KEY"], "url": url, **current_params},
                              timeout=timeout)
             html = r.content.decode("utf-8", errors="replace")
-            if r.status_code == 200:
+            is_ghost = r.status_code == 200 and len(r.content) < _GHOST_MAX_BYTES
+            if r.status_code == 200 and not is_ghost:
                 _upload_html_direct(pid, r.content)
             else:
-                _html_path = DEBUG / f"{pid}.html"
-                _html_path.write_text(html, encoding="utf-8")
+                (DEBUG / f"{pid}.html").write_text(html, encoding="utf-8")
+            if is_ghost:
+                print(f"    ⚠ fantôme {len(r.content)}o (Datadome)", end=" ", flush=True)
+                if attempt < max_attempts - 1:
+                    continue
+                return {"id": pid, "url": url, "status": None, "html": html,
+                        "error": f"datadome_ghost_{len(r.content)}o", "elapsed": round(time.time() - t0, 1)}
             if r.status_code == 200:
                 return {"id": pid, "url": url, "status": 200, "html": html,
                         "error": None, "elapsed": round(time.time() - t0, 1)}
@@ -616,10 +625,10 @@ def cmd_scrape(cp: str, commune: str, sl_code: str | None = None,
     if do_lbc and lbc_total == 0 and r_lbc["status"] == 200:
         _warn("Sondage LBC échoué — nombre de pages inconnu (HTTP 200 mais 0 annonces parsées)")
 
-    # Insérer page 1 (déjà fetchée)
-    if do_sl  and r_sl["status"]  == 200:
+    # Insérer page 1 uniquement si contenu valide — HTTP 200 avec 0 annonces = fantôme Datadome
+    if do_sl  and r_sl["status"]  == 200 and sl_ids:
         _insert_stg("stg_seloger", commune, cp, 1, sl_base,               sl_raw,  len(sl_ids),  sb)
-    if do_lbc and r_lbc["status"] == 200:
+    if do_lbc and r_lbc["status"] == 200 and lbc_ads:
         _insert_stg("stg_lbc",     commune, cp, 1, _lbc_page(lbc_base, 1), lbc_raw, len(lbc_ads), sb)
 
     # Construire les tâches pages 2..N
