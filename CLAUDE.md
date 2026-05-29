@@ -180,6 +180,12 @@ Une ligne par annonce de portail. **Append-only** — ne jamais écraser, suivi 
 | `nom_commercial`         | text        | Nom de l'entité au moment du scraping |
 | `entite_id`              | uuid FK→entites | Lien vers l'entité normalisée |
 | `run_id_premiere_obs`    | bigint FK→runs | Run qui a découvert cette annonce |
+| `etage`                  | integer     | Étage du bien (LBC : `floor_number`) |
+| `annee_construction`     | integer     | Année de construction (LBC : `building_year`) |
+| `energie_budget_min`     | integer     | Budget énergétique annuel min en € (LBC : `annual_energy_budget_min`) |
+| `energie_budget_max`     | integer     | Budget énergétique annuel max en € (LBC : `annual_energy_budget_max`) |
+| `date_maj_portail`       | date        | Date de dernière mise à jour sur le portail (SeLoger : `metadata.updateDate`) |
+| `code_insee`             | text        | Code INSEE de la commune (5 chiffres) |
 
 **Contrainte supprimée** : `annonces_signature_entite_bien_key` (UNIQUE sur
 `signature_entite_bien`) — supprimée car une même entité peut avoir plusieurs annonces.
@@ -308,44 +314,96 @@ https://www.leboncoin.fr/recherche/p-{N}?category=9
 
 ### SeLoger — bloc `__UFRN_FETCHER__`
 
-Chemin de décodage :
+Chemin de décodage HTML → stg_seloger :
 ```
 HTML → <script id="__UFRN_FETCHER__"> → JSON.parse(unicode_escape)
      → data["classified-serp-init-data"]  (base64 LZString)
      → LZString.decompressFromBase64()
-     → pageProps.classifieds          ← liste d'IDs (ordre d'affichage)
-     → pageProps.classifiedsData      ← dict keyed by ID
-     → pageProps.totalCount           ← total annonces commune
+     → extrait et stocké dans stg_seloger.data_brute avec les clés :
+         classifieds_ids    ← liste ordonnée d'IDs (ordre d'affichage)
+         classifieds_data   ← dict keyed by ID (clé alphanumérique SeLoger)
+         _meta              ← métadonnées du run (totalCount, url…)
 ```
 
-Structure d'un item `classifiedsData[id]` :
+Structure d'un item `classifieds_data[id]` (champs complets) :
 ```json
 {
+  "id": "25LFDV6HWU77",
+  "metadata": {
+    "legacyId": "255639477",
+    "creationDate": "2025-12-02T11:35:00Z",
+    "updateDate": "2026-05-07T07:40:07Z"
+  },
+  "url": "https://www.seloger.com/annonces/achat/appartement/...",
+  "tags": {
+    "isNew": false,
+    "isExclusive": true,
+    "has3DVisit": false,
+    "hasBrokerageFee": false
+  },
   "hardFacts": {
     "title": "Appartement à vendre",
-    "price": { "ariaLabel": "175000 €" },
+    "price": { "ariaLabel": "140000 €", "addition": { "value": "1 772 €/m²" } },
     "facts": [
-      { "type": "livingSpace",      "splitValue": "57,2" },
+      { "type": "livingSpace",      "splitValue": "79" },
       { "type": "numberOfRooms",    "splitValue": "3" },
-      { "type": "numberOfBedrooms", "splitValue": "2" }
+      { "type": "numberOfBedrooms", "splitValue": "2" },
+      { "type": "numberOfFloors",   "splitValue": "Étage", "value": "Étage 1/2" }
     ]
   },
-  "location": { "address": { "zipCode": "69700", "city": "Givors", "district": "" } },
+  "rawData": {
+    "price": 140000,
+    "nbroom": 3,
+    "nbbedroom": 2,
+    "surface": { "main": 79, "plot": null },
+    "propertyType": "APARTMENT",
+    "offererMarketingKey": "1901767",
+    "providercity": "SAINT-MARTIN-LA-PLAINE",
+    "providerzipcode": "42800"
+  },
+  "location": {
+    "address": { "zipCode": "42800", "city": "Rive-de-Gier", "district": "Versant Sud" },
+    "isAddressPublished": false
+  },
   "provider": {
-    "intermediaryCard": { "title": "NOM AGENCE" },
+    "intermediaryCard": { "title": "iad France  Julien BRUCY" },
+    "contactCard": { "title": "Julien Brucy", "subtitle": "Votre contact" },
     "publisherType": "AGENCY",
     "isPrivateOwner": false,
     "agencyLegalInformations": ["... SIRET 12345678901234 ..."],
-    "profileUrl": "https://..."
+    "profileUrl": "https://www.seloger.com/professionnels-immobilier/...",
+    "phoneNumbers": [],
+    "feeUrl": "https://bareme.iadfrance.fr/",
+    "website": "https://www.iadfrance.fr/..."
   },
-  "metadata": { "legacyId": "12345678", "creationDate": "2026-01-15T..." },
-  "energyClass": "C"
+  "energyClass": "D",
+  "gallery": {
+    "images": [
+      { "key": "uuid", "url": "https://mms.seloger.com/...", "classification": { "name": "LIVING_ROOM" } }
+    ],
+    "floorplans": [
+      { "key": "uuid", "url": "https://mms.seloger.com/..." }
+    ],
+    "availableFeatures": { "floorplans": true, "virtualTours": false }
+  },
+  "mainDescription": {
+    "headline": "Vente Appartement 3 pièces",
+    "description": "Texte complet de l'annonce...",
+    "metadata": { "language": "fr" }
+  },
+  "hasAIEnrichment": true
 }
 ```
 
-- **DPE** : `item["energyClass"]` — valeurs A–G, absent si non renseigné (~3% des cas Givors)
-- **GES** : **absent** dans les données SERP SeLoger. Non exposé dans `classifiedsData`.
+- **DPE** : `item["energyClass"]` — valeurs A–G, absent si non renseigné
+- **GES** : **absent** dans les données SERP SeLoger
 - **SIREN/SIRET** : regex `SIRET[^0-9]*(\d{14})` dans `agencyLegalInformations`
+- **Référence agence** : `rawData.offererMarketingKey` — **même valeur** que `custom_ref` LBC → clé de matching exacte inter-portails
+- **Mandat exclusif** : `tags.isExclusive` (booléen direct, pas de calcul)
+- **Description** : `mainDescription.description` — texte complet non capturé actuellement
+- **Photos** : `gallery.images[]` avec classification par pièce (LIVING_ROOM, BEDROOM, KITCHEN, BATHROOM…)
+- **Plans** : `gallery.floorplans[]` — présent sur certaines annonces
+- **Nom conseiller** : `provider.contactCard.title` — nom individuel (vs `intermediaryCard.title` = nom boutique)
 
 ### LeBonCoin — bloc `__NEXT_DATA__`
 
@@ -371,12 +429,33 @@ Structure d'un item `ads[i]` :
     "siren": "501238356",
     "store_id": "85597288"
   },
+  "location": {
+    "lat": 45.525, "lng": 4.617,
+    "zipcode": "69700", "city": "Givors",
+    "district": "Centre-ville - Baldeyrou - République"
+  },
   "attributes": [
-    { "key": "real_estate_type", "value": "1" },
-    { "key": "square",           "value": "90" },
-    { "key": "rooms",            "value": "4" },
-    { "key": "energy_rate",      "value": "d" },
-    { "key": "ges",              "value": "d" }
+    { "key": "real_estate_type",   "value": "1" },
+    { "key": "square",             "value": "90" },
+    { "key": "rooms",              "value": "4" },
+    { "key": "bedrooms",           "value": "2" },
+    { "key": "nb_shower_room",     "value": "1" },
+    { "key": "energy_rate",        "value": "d" },
+    { "key": "ges",                "value": "d" },
+    { "key": "building_year",      "value": "1900" },
+    { "key": "floor_number",       "value": "1" },
+    { "key": "nb_floors_building", "value": "3" },
+    { "key": "elevator",           "value": "2" },
+    { "key": "heating_type",       "value": "individual" },
+    { "key": "heating_mode",       "value": "gas" },
+    { "key": "global_condition",   "value": "2" },
+    { "key": "specificities",      "values": ["intercom", "cave"] },
+    { "key": "fees_at_the_expanse_of", "value": "seller" },
+    { "key": "mandate_type",       "value": "exclusive" },
+    { "key": "custom_ref",         "value": "1901767" },
+    { "key": "annual_energy_budget_min", "value": "1371" },
+    { "key": "annual_energy_budget_max", "value": "1855" },
+    { "key": "estimated_notary_fees",    "value": "11200" }
   ]
 }
 ```
@@ -385,6 +464,14 @@ Structure d'un item `ads[i]` :
 - **GES** : `_lbc_attr(ad, "ges")` → normaliser `.upper()` — présent sur ~58% des annonces
 - **SIREN** : `owner.siren` — présent pour les pros (`owner.type == "pro"`)
 - **Type** : `owner.type == "private"` → particulier, sinon agence
+- **GPS** : `location.lat` / `location.lng` — coordonnées précises du bien
+- **Quartier** : `location.district` — nom du quartier LBC
+- **Référence agence** : `custom_ref` — **même valeur** que `rawData.offererMarketingKey` SeLoger → clé de matching exacte inter-portails
+- **Mandat exclusif** : `mandate_type == "exclusive"`
+- **Caractéristiques** : `specificities.values[]` — liste (intercom, cave, balcon, parking…)
+- **Chauffage** : `heating_type` (individual/collective) + `heating_mode` (gas/electric/…)
+- **État** : `global_condition` (1=à rénover, 2=bon état, 3=neuf/récent)
+- **Honoraires** : `fees_at_the_expanse_of` (seller/buyer)
 
 ---
 
