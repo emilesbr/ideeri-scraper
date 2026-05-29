@@ -635,9 +635,11 @@ def cmd_scrape(cp: str, commune: str, sl_code: str | None = None,
 
     # Insérer page 1 uniquement si contenu valide — HTTP 200 avec 0 annonces = fantôme Datadome
     if do_sl  and r_sl["status"]  == 200 and sl_ids:
-        _insert_stg("stg_seloger", commune, cp, 1, sl_base,               sl_raw,  len(sl_ids),  sb)
+        if not _insert_stg("stg_seloger", commune, cp, 1, sl_base, sl_raw, len(sl_ids), sb):
+            err_sl.append(1)
     if do_lbc and r_lbc["status"] == 200 and lbc_ads:
-        _insert_stg("stg_lbc",     commune, cp, 1, _lbc_page(lbc_base, 1), lbc_raw, len(lbc_ads), sb)
+        if not _insert_stg("stg_lbc", commune, cp, 1, _lbc_page(lbc_base, 1), lbc_raw, len(lbc_ads), sb):
+            err_lbc.append(1)
 
     # Construire les tâches pages 2..N
     tasks = []
@@ -683,7 +685,9 @@ def cmd_scrape(cp: str, commune: str, sl_code: str | None = None,
                     err_sl.append(p)
                     print(f"  {Y}⚠  seloger p{p} | HTTP 200 mais 0 annonces (parsing raté ?){RST}")
                     continue
-                _insert_stg("stg_seloger", commune, cp, p, url, raw, len(ids), sb)
+                if not _insert_stg("stg_seloger", commune, cp, p, url, raw, len(ids), sb):
+                    err_sl.append(p)
+                    continue
                 total_sl += len(ids)
                 ok_sl    += 1
             else:
@@ -692,7 +696,9 @@ def cmd_scrape(cp: str, commune: str, sl_code: str | None = None,
                     err_lbc.append(p)
                     print(f"  {Y}⚠  lbc     p{p} | HTTP 200 mais 0 annonces (parsing raté ?){RST}")
                     continue
-                _insert_stg("stg_lbc", commune, cp, p, url, raw, len(ads), sb)
+                if not _insert_stg("stg_lbc", commune, cp, p, url, raw, len(ads), sb):
+                    err_lbc.append(p)
+                    continue
                 total_lbc += len(ads)
                 ok_lbc    += 1
 
