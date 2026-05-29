@@ -1,5 +1,7 @@
 # Ideeri — Scraping Immobilier
 
+> **Protocole expérimental complet** : voir [`THESE.md`](THESE.md) — design DiD, hypothèses H1–H4, terrain, croisements DVF/ADEME/SIRENE.
+
 ## 1. Contexte métier
 
 **Qui** : Ideeri, éditeur SaaS immobilier (emile.soubeyrand@ideeri.fr).
