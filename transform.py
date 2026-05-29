@@ -17,7 +17,7 @@ load_dotenv()
 sb = create_client(os.environ["SUPA_URL"], os.environ["SUPA_KEY"])
 
 
-_RETRY_KEYWORDS = ("timeout", "connection", "network", "read timed out", "connect timeout", "eof occurred")
+_RETRY_KEYWORDS = ("timeout", "connection", "network", "read timed out", "connect timeout", "eof occurred", "remoteprotocol", "streamreset", "stream_id")
 
 def _sb_execute(query, retries: int = 3, delay: float = 2.0):
     """Retry uniquement sur erreurs réseau/timeout — pas sur les erreurs de données ou logique."""
@@ -633,12 +633,13 @@ def update_entity_snapshots(code_postal: str, scraped_at: str) -> None:
 # Matching — deux appels sur le même score unique
 # ---------------------------------------------------------------------------
 
-def ref_match(code_postal: str, commune: str = "") -> int:
+def ref_match(code_postal: str, commune: str = "") -> tuple[int, set[str], set[str]]:
     """Passe 0 — apparie LBC↔SeLoger par référence agence exacte (ref_agence).
     Cas 1:1 uniquement ; les N:M tombent sur intra_entity_match.
-    Retourne le nombre de nouvelles paires créées."""
+    Retourne (nb_paires, lbc_ids_matchés, sl_ids_matchés) pour que
+    intra_entity_match puisse les exclure sans polluer match_confidence."""
     from collections import defaultdict
-    fields = "id_annonce, source, ref_agence, prix_affiche, entite_id, bien_id, commune, match_confidence"
+    fields = "id_annonce, source, ref_agence, prix_affiche, entite_id, bien_id, commune"
     q = (sb.table("annonces").select(fields)
            .eq("code_postal", code_postal).eq("est_active", True)
            .not_.is_("ref_agence", "null").limit(5000))
@@ -653,6 +654,8 @@ def ref_match(code_postal: str, commune: str = "") -> int:
         (ref_to_lbc if a["source"] == "lbc" else ref_to_sl)[a["ref_agence"]].append(a)
 
     n = 0
+    matched_lbc: set[str] = set()
+    matched_sl:  set[str] = set()
     for ref in ref_to_lbc:
         if ref not in ref_to_sl:
             continue
@@ -665,28 +668,31 @@ def ref_match(code_postal: str, commune: str = "") -> int:
         p1, p2 = la.get("prix_affiche"), sa.get("prix_affiche")
         if p1 and p2 and abs(p1 - p2) / max(p1, p2) > 0.05:
             continue
-        # Déjà matché correctement
-        if sa.get("bien_id") == la["id_annonce"]:
-            continue
         lbc_id = la["id_annonce"]
-        _sb_execute(sb.table("annonces").update({
-            "sur_seloger": True, "match_confidence": 1.0, "bien_id": lbc_id,
-        }).eq("id_annonce", lbc_id))
-        _sb_execute(sb.table("annonces").update({
-            "sur_lbc": True, "match_confidence": 1.0, "bien_id": lbc_id,
-        }).eq("id_annonce", sa["id_annonce"]))
-        n += 1
-    return n
+        # Déjà matché correctement — on marque quand même pour exclure du fuzzy
+        if sa.get("bien_id") != lbc_id:
+            _sb_execute(sb.table("annonces").update({
+                "sur_seloger": True, "match_confidence": 1.0, "bien_id": lbc_id,
+            }).eq("id_annonce", lbc_id))
+            _sb_execute(sb.table("annonces").update({
+                "sur_lbc": True, "match_confidence": 1.0, "bien_id": lbc_id,
+            }).eq("id_annonce", sa["id_annonce"]))
+            n += 1
+        matched_lbc.add(lbc_id)
+        matched_sl.add(sa["id_annonce"])
+    return n, matched_lbc, matched_sl
 
 
-def intra_entity_match(code_postal: str, commune: str = "") -> int:
+def intra_entity_match(code_postal: str, commune: str = "",
+                       ref_matched_lbc: set[str] | None = None,
+                       ref_matched_sl:  set[str] | None = None) -> int:
     """Apparie LBC↔SeLoger de la même entité. Seuil 0.70.
-    Action : sur_lbc/sur_seloger=True, bien_id = id_annonce LBC, match_confidence.
+    ref_matched_lbc / ref_matched_sl : IDs déjà matchés par ref_match ce run — exclus.
     Retourne le nombre de paires matchées."""
     from collections import defaultdict
     fields = (
         "id_annonce, source, type_bien, surface, prix_affiche, nb_pieces, "
-        "dpe, ges, annee_construction, entite_id, bien_id, commune, match_confidence"
+        "dpe, ges, annee_construction, entite_id, bien_id, commune"
     )
     q_lbc = sb.table("annonces").select(fields).eq("code_postal", code_postal).eq("source", "lbc").eq("est_active", True).not_.is_("entite_id", "null")
     q_sl  = sb.table("annonces").select(fields).eq("code_postal", code_postal).eq("source", "seloger").eq("est_active", True).not_.is_("entite_id", "null")
@@ -704,9 +710,9 @@ def intra_entity_match(code_postal: str, commune: str = "") -> int:
     for a in lbc: lbc_by_ent[a["entite_id"]].append(a)
     for a in sl:  sl_by_ent[a["entite_id"]].append(a)
 
-    # Exclure les annonces déjà matchées par ref_match (match_confidence déjà posé)
-    matched_lbc: set[str] = {a["id_annonce"] for a in lbc if a.get("match_confidence") is not None}
-    matched_sl:  set[str] = {a["id_annonce"] for a in sl  if a.get("match_confidence") is not None}
+    # Exclure uniquement les IDs matchés par ref_match dans CE run
+    matched_lbc: set[str] = set(ref_matched_lbc or set())
+    matched_sl:  set[str] = set(ref_matched_sl  or set())
 
     candidates = []
     for eid in set(lbc_by_ent) & set(sl_by_ent):
@@ -838,24 +844,54 @@ def cross_entity_match(code_postal: str, commune: str = "") -> dict:
 # ---------------------------------------------------------------------------
 
 def _load_zone_ref(code_postal: str, commune: str) -> dict:
-    """Lit commune_officielle et code_insee depuis le scrape_state."""
+    """Lit commune_officielle et code_insee.
+    Priorité : 1) zones_ref Supabase  2) meilleur scrape_state (avec code_insee)  3) fallback."""
+    # 1. zones_ref — source de vérité si migration_batch.sql appliquée
+    try:
+        rows = _sb_execute(sb.table("zones_ref").select(
+            "commune_officielle, code_insee"
+        ).eq("cp", code_postal)).data
+        if rows and rows[0].get("code_insee"):
+            return {
+                "commune_officielle": rows[0]["commune_officielle"] or commune,
+                "code_insee":         rows[0]["code_insee"],
+            }
+    except Exception:
+        pass
+
+    # 2. Scrape_state — préférer celui avec un code_insee valide
     here = Path(__file__).parent / "debug"
     slug = re.sub(r"[^a-z0-9]+", "_",
                   "".join(c for c in unicodedata.normalize("NFKD", commune.lower())
                           if not unicodedata.combining(c))).strip("_")
-    sf = here / f"scrape_state_{code_postal}_{slug}.json"
-    if not sf.exists():
+    candidates = []
+    exact = here / f"scrape_state_{code_postal}_{slug}.json"
+    if exact.exists():
+        candidates = [exact]
+    if not candidates:
         candidates = sorted(here.glob(f"scrape_state_{code_postal}_*.json"))
-        sf = candidates[0] if candidates else None
-    if sf and sf.exists():
+
+    # Trier : d'abord ceux avec code_insee, puis par date décroissante
+    best = None
+    for sf in candidates:
         try:
             d = json.loads(sf.read_text(encoding="utf-8"))
-            return {
-                "commune_officielle": d.get("commune_officielle") or commune,
-                "code_insee":         d.get("code_insee") or "",
-            }
+            if d.get("code_insee") and d.get("commune_officielle"):
+                best = d
+                break
         except Exception:
             pass
+    if best is None and candidates:
+        try:
+            best = json.loads(candidates[0].read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    if best:
+        return {
+            "commune_officielle": best.get("commune_officielle") or commune,
+            "code_insee":         best.get("code_insee") or "",
+        }
     return {"commune_officielle": commune, "code_insee": ""}
 
 
@@ -956,11 +992,11 @@ def run_transform(code_postal: str, commune: str = "",
 
     # Matching toujours exécuté, même si l'upsert a crashé partiellement
     try:
-        n_ref = ref_match(code_postal, commune)
+        n_ref, ref_lbc, ref_sl = ref_match(code_postal, commune)
         if n_ref:
             print(f"\n  {n_ref} paires matchées par référence agence (passe 0)")
 
-        n_intra = intra_entity_match(code_postal, commune)
+        n_intra = intra_entity_match(code_postal, commune, ref_lbc, ref_sl)
         if n_intra:
             print(f"  {n_intra} paires intra-entité matchées (LBC↔SeLoger, seuil 0.70)")
 

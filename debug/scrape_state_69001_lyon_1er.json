@@ -1,0 +1,31 @@
+{
+  "commune": "Lyon 1er",
+  "cp": "69001",
+  "commune_officielle": "Lyon 1er Arrondissement",
+  "code_insee": "69381",
+  "lbc_base": "https://www.leboncoin.fr/recherche?category=9&locations=Lyon_69001__45.76852_4.83187_1445&immo_sell_type=old&real_estate_type=2,1&owner_type=all",
+  "sl_base": "https://www.seloger.com/classified-search?classifiedBusiness=Professional&distributionTypes=Buy&estateTypes=House,Apartment&locations=POCOFR4445&projectTypes=Resale",
+  "lbc_pages": 0,
+  "sl_pages": 13,
+  "lbc_scraped": [],
+  "sl_scraped": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13
+  ],
+  "pages_erreur_lbc": [
+    1
+  ],
+  "pages_erreur_sl": [],
+  "scraped_at": "2026-05-29T15:22:39.111406+00:00"
+}
