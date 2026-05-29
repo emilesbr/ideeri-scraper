@@ -63,6 +63,28 @@ def _sb():
     return create_client(os.environ["SUPA_URL"], os.environ["SUPA_KEY"])
 
 
+def _storage_pages(cp: str) -> dict[str, set[int]]:
+    """Retourne les pages disponibles dans le bucket debug-html pour un CP donné.
+    Format : {"lbc": {1, 3, 5}, "seloger": {1, 2, 3}}
+    Utilisé pour distinguer pages récupérables gratuitement vs à re-scraper."""
+    import re as _re
+    result = {"lbc": set(), "seloger": set()}
+    try:
+        svc_key = os.environ.get("SUPA_SERVICE_KEY") or os.environ.get("SUPA_KEY")
+        if not svc_key:
+            return result
+        from supabase import create_client as _sc
+        sb2 = _sc(os.environ["SUPA_URL"], svc_key)
+        files = sb2.storage.from_("debug-html").list(options={"limit": 500})
+        for f in files:
+            m = _re.match(rf"(lbc|seloger)_{cp}_p(\d+)", f.get("name", ""))
+            if m:
+                result[m.group(1)].add(int(m.group(2)))
+    except Exception:
+        pass
+    return result
+
+
 def _upload_html_direct(pid: str, content: bytes) -> None:
     """Upload le contenu HTML brut vers Supabase Storage en arrière-plan, sans écriture disque."""
     svc_key = os.environ.get("SUPA_SERVICE_KEY")
@@ -473,7 +495,7 @@ def cmd_status(cp: str):
     else:
         print(f"  📅 dernier run   : aucun")
 
-    # Scrape incomplet (state files)
+    # Scrape incomplet (state files) + indicateur storage
     for sf in sorted(DEBUG.glob(f"scrape_state_{cp}_*.json")):
         state = json.loads(sf.read_text(encoding="utf-8"))
         err_lbc = state.get("pages_erreur_lbc", [])
@@ -481,6 +503,19 @@ def cmd_status(cp: str):
         if err_lbc or err_sl:
             comm = state.get("commune", cp)
             _warn(f"Scrape incomplet ({comm}) — LBC: {err_lbc} | SeLoger: {err_sl}")
+            # Vérifier quelles pages sont récupérables depuis le storage (gratuit)
+            in_storage = _storage_pages(cp)
+            def _fmt(pages: list, src: str) -> str:
+                free = [p for p in pages if p in in_storage[src]]
+                paid = [p for p in pages if p not in in_storage[src]]
+                parts = []
+                if free: parts.append(f"{G}storage:{free}{RST}")
+                if paid: parts.append(f"{Y}ScrapingBee:{paid}{RST}")
+                return " | ".join(parts) if parts else "—"
+            if err_lbc:
+                print(f"    LBC     → {_fmt(err_lbc, 'lbc')}")
+            if err_sl:
+                print(f"    SeLoger → {_fmt(err_sl, 'seloger')}")
             print(f"    → {C}python3 pipeline.py retry {cp} {comm}{RST}")
 
     # Matching
@@ -867,8 +902,21 @@ def cmd_retry(cp: str, commune: str | None = None, wait_override: int | None = N
         return
 
     print(f"\n{B}=== Retry {commune} ({cp}) ==={RST}\n")
-    if err_lbc: print(f"  {Y}Pages LBC manquantes   : {err_lbc}{RST}")
-    if err_sl:  print(f"  {Y}Pages SeLoger manquantes: {err_sl}{RST}")
+
+    # Indicateur storage : pages récupérables gratuitement vs à re-scraper
+    in_storage = _storage_pages(cp)
+    def _fmt_pages(pages: list, src: str) -> str:
+        free = [p for p in pages if p in in_storage[src]]
+        paid = [p for p in pages if p not in in_storage[src]]
+        parts = []
+        if free: parts.append(f"{G}storage (gratuit) : {free}{RST}")
+        if paid: parts.append(f"{Y}ScrapingBee (crédits) : {paid}{RST}")
+        return "\n    ".join(parts) if parts else "—"
+
+    if err_lbc:
+        print(f"  Pages LBC manquantes :\n    {_fmt_pages(err_lbc, 'lbc')}")
+    if err_sl:
+        print(f"  Pages SeLoger manquantes :\n    {_fmt_pages(err_sl, 'seloger')}")
     if wait_override:
         print(f"  Wait LBC : {wait_override}ms")
     print()
