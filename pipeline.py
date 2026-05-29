@@ -138,19 +138,19 @@ def _fetch(pid: str, url: str, params: dict, timeout: int) -> dict:
                              timeout=timeout)
             html = r.content.decode("utf-8", errors="replace")
             is_ghost = r.status_code == 200 and len(r.content) < _GHOST_MAX_BYTES
-            if not (r.status_code == 200 and not is_ghost):
+            if r.status_code == 200 and not is_ghost:
+                _upload_html_direct(pid, r.content)
+            else:
                 (DEBUG / f"{pid}.html").write_text(html, encoding="utf-8")
             if is_ghost:
                 print(f"    ⚠ fantôme {len(r.content)}o (Datadome)", end=" ", flush=True)
                 if attempt < max_attempts - 1:
                     continue
                 return {"id": pid, "url": url, "status": None, "html": html,
-                        "content": None, "error": f"datadome_ghost_{len(r.content)}o",
-                        "elapsed": round(time.time() - t0, 1)}
+                        "error": f"datadome_ghost_{len(r.content)}o", "elapsed": round(time.time() - t0, 1)}
             if r.status_code == 200:
-                # content conservé pour upload après insert stg (voir _insert_stg)
                 return {"id": pid, "url": url, "status": 200, "html": html,
-                        "content": r.content, "error": None, "elapsed": round(time.time() - t0, 1)}
+                        "error": None, "elapsed": round(time.time() - t0, 1)}
             # 613 = Datadome block sur stealth proxy → bascule premium pour les tentatives suivantes
             if r.status_code == 500 and "Server responded with 613" in html and not premium_fallback:
                 premium_fallback = True
@@ -291,10 +291,9 @@ def _sl_base(code: str) -> str:
 
 
 def _insert_stg(table: str, commune: str, cp: str, page: int,
-                url: str, raw: dict, nb: int, sb,
-                pid: str = "", content: bytes | None = None) -> bool:
-    """Insère en stg_*. Si l'insert réussit, uploade le HTML brut en storage (source de vérité).
-    L'upload n'a lieu QUE si l'insert stg réussit → storage = copie fidèle de stg, jamais plus."""
+                url: str, raw: dict, nb: int, sb) -> bool:
+    """Insère en stg_*. Retente 2 fois sur erreur réseau/Supabase transitoire.
+    Retourne False si l'insert échoue définitivement → page ajoutée à err_* par l'appelant."""
     now = datetime.now(timezone.utc).isoformat()
     payload = {
         "scraped_at":  now,
@@ -311,14 +310,16 @@ def _insert_stg(table: str, commune: str, cp: str, page: int,
             **raw,
         },
     }
-    try:
-        sb.table(table).insert(payload).execute()
-        if pid and content:
-            _upload_html_direct(pid, content)
-        return True
-    except Exception as e:
-        print(f"    {R}[SUPA ERR]{RST} {e}")
-        return False
+    for attempt in range(3):
+        try:
+            sb.table(table).insert(payload).execute()
+            return True
+        except Exception as e:
+            if attempt == 2:
+                print(f"    {R}[SUPA ERR définitif p{page}]{RST} {e}")
+                return False
+            print(f"    {Y}[SUPA retry {attempt+1}/2]{RST} {e}")
+            time.sleep(2 * (attempt + 1))
 
 
 # ---------------------------------------------------------------------------
@@ -640,12 +641,10 @@ def cmd_scrape(cp: str, commune: str, sl_code: str | None = None,
 
     # Insérer page 1 uniquement si contenu valide — HTTP 200 avec 0 annonces = fantôme Datadome
     if do_sl  and r_sl["status"]  == 200 and sl_ids:
-        if not _insert_stg("stg_seloger", commune, cp, 1, sl_base, sl_raw, len(sl_ids), sb,
-                            pid=f"seloger_{cp}_p1", content=r_sl.get("content")):
+        if not _insert_stg("stg_seloger", commune, cp, 1, sl_base, sl_raw, len(sl_ids), sb):
             err_sl.append(1)
     if do_lbc and r_lbc["status"] == 200 and lbc_ads:
-        if not _insert_stg("stg_lbc", commune, cp, 1, _lbc_page(lbc_base, 1), lbc_raw, len(lbc_ads), sb,
-                            pid=f"lbc_{cp}_p1", content=r_lbc.get("content")):
+        if not _insert_stg("stg_lbc", commune, cp, 1, _lbc_page(lbc_base, 1), lbc_raw, len(lbc_ads), sb):
             err_lbc.append(1)
 
     # Construire les tâches pages 2..N
@@ -692,8 +691,7 @@ def cmd_scrape(cp: str, commune: str, sl_code: str | None = None,
                     err_sl.append(p)
                     print(f"  {Y}⚠  seloger p{p} | HTTP 200 mais 0 annonces (parsing raté ?){RST}")
                     continue
-                if not _insert_stg("stg_seloger", commune, cp, p, url, raw, len(ids), sb,
-                                   pid=f"seloger_{cp}_p{p}", content=r.get("content")):
+                if not _insert_stg("stg_seloger", commune, cp, p, url, raw, len(ids), sb):
                     err_sl.append(p)
                     continue
                 total_sl += len(ids)
@@ -704,8 +702,7 @@ def cmd_scrape(cp: str, commune: str, sl_code: str | None = None,
                     err_lbc.append(p)
                     print(f"  {Y}⚠  lbc     p{p} | HTTP 200 mais 0 annonces (parsing raté ?){RST}")
                     continue
-                if not _insert_stg("stg_lbc", commune, cp, p, url, raw, len(ads), sb,
-                                   pid=f"lbc_{cp}_p{p}", content=r.get("content")):
+                if not _insert_stg("stg_lbc", commune, cp, p, url, raw, len(ads), sb):
                     err_lbc.append(p)
                     continue
                 total_lbc += len(ads)
