@@ -7,5 +7,7 @@
   "sl_pages": 5,
   "pages_erreur_lbc": [],
   "pages_erreur_sl": [],
-  "scraped_at": "2026-05-27T16:09:08.615719+00:00"
+  "scraped_at": "2026-05-27T16:09:08.615719+00:00",
+  "commune_officielle": "Charbonnières-les-Bains",
+  "code_insee": "69044"
 }

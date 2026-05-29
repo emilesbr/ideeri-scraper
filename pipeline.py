@@ -512,8 +512,33 @@ def _save_scrape_state(cp: str, commune: str, lbc_base: str | None, sl_base: str
     )
 
 
+def _confirm(prompt: str, auto: bool) -> bool:
+    if auto:
+        print(f"  {prompt} → o (auto)")
+        return True
+    return input(prompt).strip().lower() == "o"
+
+
+def _get_credits_remaining() -> int | None:
+    try:
+        r = requests.get(
+            "https://app.scrapingbee.com/api/v1/usage",
+            params={"api_key": os.environ["SCRAPINGBEE_KEY"]},
+            timeout=10,
+        )
+        if r.status_code == 200:
+            d = r.json()
+            used = d.get("used_api_credits", 0)
+            maxi = d.get("max_api_credits")
+            return (maxi - used) if isinstance(maxi, int) else None
+    except Exception:
+        pass
+    return None
+
+
 def cmd_scrape(cp: str, commune: str, sl_code: str | None = None,
-               source: str | None = None, lbc_loc: str | None = None) -> dict | None:
+               source: str | None = None, lbc_loc: str | None = None,
+               auto_yes: bool = False) -> dict | None:
     do_sl  = source in (None, "seloger")
     do_lbc = source in (None, "lbc")
     sb       = _sb()
@@ -572,14 +597,12 @@ def cmd_scrape(cp: str, commune: str, sl_code: str | None = None,
         existing = sb.table(gtable).select("scraped_at").eq("code_postal", cp).execute().data
         if any((r.get("scraped_at") or "")[:10] == today for r in existing):
             _warn(f"Des données {gtable} existent déjà pour {cp} aujourd'hui.")
-            rep = input("  Écraser et re-scraper ? [o/n] : ").strip().lower()
-            if rep != "o":
+            if not _confirm("  Écraser et re-scraper ? [o/n] : ", auto_yes):
                 print("  Annulé.")
                 return None
             break
 
-    rep = input("  Continuer ? [o/n] : ").strip().lower()
-    if rep != "o":
+    if not _confirm("  Continuer ? [o/n] : ", auto_yes):
         print("  Annulé.")
         return None
 
@@ -687,6 +710,58 @@ def cmd_scrape(cp: str, commune: str, sl_code: str | None = None,
 # ---------------------------------------------------------------------------
 # retry
 # ---------------------------------------------------------------------------
+
+def cmd_batch(min_credits: int = 300, source: str | None = None, force: bool = False):
+    """Lance le pipeline sur toutes les zones actives dans zones_ref (actif=true)."""
+    sb = _sb()
+
+    zones = sb.table("zones_ref").select("cp, commune, sl_code, lbc_loc, priorite") \
+               .eq("actif", True).order("priorite").execute().data
+    if not zones:
+        _err("Aucune zone active dans zones_ref (actif=true)")
+        return
+
+    credits = _get_credits_remaining()
+    print(f"\n{B}=== Batch {len(zones)} zones ==={RST}")
+    print(f"  Crédits disponibles : {credits if credits is not None else '?'}\n")
+
+    today = datetime.now(timezone.utc).date().isoformat()
+    results = []
+
+    for z in zones:
+        cp      = z["cp"]
+        commune = z["commune"]
+        sl_code = z.get("sl_code") or None
+        lbc_loc = z.get("lbc_loc") or None
+
+        print(f"\n{B}--- {commune} ({cp}) ---{RST}")
+
+        if not force:
+            already = sb.table("runs").select("scraped_at").eq("code_postal", cp).eq(
+                "statut", "ok").order("scraped_at", desc=True).limit(1).execute().data
+            if already and (already[0].get("scraped_at") or "")[:10] == today:
+                _ok(f"Déjà scrapé aujourd'hui — skip")
+                results.append({"cp": cp, "commune": commune, "status": "skipped"})
+                continue
+
+        credits = _get_credits_remaining()
+        if credits is not None and credits < min_credits:
+            _warn(f"Quota insuffisant ({credits} crédits < seuil {min_credits}) — arrêt batch")
+            break
+
+        try:
+            cmd_run(cp, commune, sl_code=sl_code, lbc_loc=lbc_loc,
+                    source=source, auto_yes=True)
+            results.append({"cp": cp, "commune": commune, "status": "ok"})
+        except Exception as e:
+            _err(f"{commune} — {e}")
+            results.append({"cp": cp, "commune": commune, "status": "error", "error": str(e)})
+
+    print(f"\n{B}=== Résumé batch ==={RST}")
+    for r in results:
+        icon = f"{G}✅{RST}" if r["status"] == "ok" else (f"{C}⏭ {RST}" if r["status"] == "skipped" else f"{R}❌{RST}")
+        print(f"  {icon} {r['commune']} ({r['cp']}) — {r['status']}")
+
 
 def cmd_retry(cp: str, commune: str | None = None, wait_override: int | None = None,
               lbc_pages_override: str | None = None, sl_pages_override: str | None = None):
@@ -902,9 +977,10 @@ def cmd_transform(cp: str, commune: str,
 # ---------------------------------------------------------------------------
 
 def cmd_run(cp: str, commune: str, sl_code: str | None = None,
-            source: str | None = None, lbc_loc: str | None = None):
+            source: str | None = None, lbc_loc: str | None = None,
+            auto_yes: bool = False):
     t0 = time.time()
-    result = cmd_scrape(cp, commune, sl_code, source, lbc_loc)
+    result = cmd_scrape(cp, commune, sl_code, source, lbc_loc, auto_yes=auto_yes)
     if result is None:
         return
 
@@ -913,8 +989,7 @@ def cmd_run(cp: str, commune: str, sl_code: str | None = None,
 
     if err_lbc or err_sl:
         _warn(f"Run incomplet — pages LBC: {err_lbc} | SeLoger: {err_sl}")
-        rep = input("  Lancer le transform quand même (données partielles) ? [o/n] : ").strip().lower()
-        if rep != "o":
+        if not _confirm("  Lancer le transform quand même (données partielles) ? [o/n] : ", auto_yes):
             print(f"  Transform annulé. Complète d'abord : {C}python3 pipeline.py retry {cp} {commune}{RST}")
             return
 
@@ -1038,6 +1113,13 @@ def main():
     p.add_argument("--sl-pages", dest="sl_pages_override", default=None,
                    help="Pages SeLoger à re-scraper (ex: 5,6) — override le state")
 
+    p = sub.add_parser("batch", help="Scrape toutes les zones actives (zones_ref actif=true)")
+    p.add_argument("--min-credits", type=int, default=300, dest="min_credits",
+                   help="Crédits minimum avant de s'arrêter (défaut 300)")
+    p.add_argument("--source", choices=["seloger", "lbc"], default=None)
+    p.add_argument("--force", action="store_true",
+                   help="Re-scrape même si déjà fait aujourd'hui")
+
     p = sub.add_parser("reset", help="Réinitialise le matching d'un code postal")
     p.add_argument("cp")
 
@@ -1053,6 +1135,7 @@ def main():
         "scrape":    lambda: cmd_scrape(args.cp, args.commune, getattr(args, "sl_code", None), getattr(args, "source", None), getattr(args, "lbc_loc", None)),
         "transform": lambda: cmd_transform(args.cp, args.commune),
         "run":       lambda: cmd_run(args.cp, args.commune, getattr(args, "sl_code", None), getattr(args, "source", None), getattr(args, "lbc_loc", None)),
+        "batch":     lambda: cmd_batch(getattr(args, "min_credits", 300), getattr(args, "source", None), getattr(args, "force", False)),
         "retry":     lambda: cmd_retry(args.cp, getattr(args, "commune", None), getattr(args, "wait_override", None), getattr(args, "lbc_pages_override", None), getattr(args, "sl_pages_override", None)),
         "reset":     lambda: cmd_reset(args.cp),
         "enrich":    lambda: cmd_enrich(getattr(args, "all", False), getattr(args, "dry_run", False)),
