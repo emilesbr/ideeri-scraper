@@ -896,17 +896,36 @@ def cmd_retry(cp: str, commune: str | None = None, wait_override: int | None = N
     print(f"\n  Scraping {len(tasks)} page(s)...\n")
 
     def _fetch_or_cache(src: str, p: int, url: str, params: dict, to: int) -> dict:
-        """Utilise le HTML local si déjà scrapé, sinon va sur ScrapingBee."""
+        """Priorité : 1) cache local  2) storage Supabase  3) ScrapingBee (crédits)."""
         pid = f"{src}_{cp}_p{p}"
-        cached = DEBUG / f"{pid}_retry.html"
-        if not cached.exists():
-            cached = DEBUG / f"{pid}_diag.html"
-        if cached.exists():
-            html = cached.read_text(encoding="utf-8")
-            # Vérifie que c'est bien une vraie page avec données
-            if "__NEXT_DATA__" in html or "__UFRN_FETCHER__" in html:
-                print(f"  {C}↩ {src:8s} p{p} | cache local{RST}")
-                return {"id": pid, "url": url, "status": 200, "html": html, "error": None, "elapsed": 0}
+        marker = "__NEXT_DATA__" if src == "lbc" else "__UFRN_FETCHER__"
+
+        # 1. Cache local (debug/*.html)
+        for suffix in ("_retry.html", "_diag.html", ".html"):
+            cached = DEBUG / f"{pid}{suffix}"
+            if cached.exists():
+                html = cached.read_text(encoding="utf-8")
+                if marker in html:
+                    print(f"  {C}↩ {src:8s} p{p} | cache local{RST}")
+                    return {"id": pid, "url": url, "status": 200, "html": html, "error": None, "elapsed": 0}
+
+        # 2. Storage Supabase (gratuit — HTML déjà payé)
+        try:
+            svc_key = os.environ.get("SUPA_SERVICE_KEY") or os.environ.get("SUPA_KEY")
+            if svc_key:
+                from supabase import create_client as _sc
+                _sb2 = _sc(os.environ["SUPA_URL"], svc_key)
+                for fname in (f"{pid}.html", f"{pid}_retry.html"):
+                    content = _sb2.storage.from_("debug-html").download(fname)
+                    html = content.decode("utf-8", errors="replace")
+                    if marker in html:
+                        print(f"  {C}↩ {src:8s} p{p} | storage{RST}")
+                        return {"id": pid, "url": url, "status": 200, "html": html, "error": None, "elapsed": 0}
+        except Exception:
+            pass
+
+        # 3. ScrapingBee (coûte des crédits — dernier recours)
+        print(f"  {Y}↗ {src:8s} p{p} | ScrapingBee (non trouvé en cache){RST}")
         return _fetch(pid + "_retry", url, params, to)
 
     has_lbc = any(s == "lbc" for s, *_ in tasks)
