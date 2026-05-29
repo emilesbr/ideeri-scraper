@@ -107,9 +107,10 @@ _LBC_PREMIUM_PARAMS = {"render_js": "true", "premium_proxy": "true", "wait": "60
                        "block_resources": "true", "country_code": "fr"}
 
 # Params pour zones urbaines denses (arrondissements Lyon, Paris…) où Datadome est agressif.
-# wait=10000ms de base, premium_proxy dès le départ, 1 seul worker (moins détectable).
+# premium_proxy + wait=10000ms + block_resources=False (recommandé par ScrapingBee sur erreur 613).
+# 1 seul worker (moins détectable). Crédits 613 non facturés par ScrapingBee.
 _LBC_URBAN_PARAMS = {"render_js": "true", "premium_proxy": "true", "wait": "10000",
-                     "block_resources": "true", "country_code": "fr"}
+                     "block_resources": "false", "country_code": "fr"}
 
 _GHOST_MAX_BYTES = 2000  # Datadome wrapper vide ~586o — toute réponse HTTP 200 sous ce seuil est rejetée
 
