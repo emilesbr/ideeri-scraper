@@ -1202,7 +1202,8 @@ async function selectZone(cp, commune) {
     return;
   }
 
-  // Nouvelle sélection — charger les données
+  // Nouvelle sélection — remplace la sélection courante (clic direct)
+  _selectedZones.clear();
   document.getElementById('home-view').style.display = 'none';
   zc.style.display = 'block';
   zc.innerHTML = `<div class="page-head">
