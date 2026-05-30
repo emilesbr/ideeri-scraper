@@ -86,15 +86,27 @@ _run_logs: dict[str, list[str]] = {}
 _run_done: dict[str, bool | None] = {}  # None = en cours, True = ok, False = erreur
 
 
+def _log_file(cp: str) -> Path:
+    return HERE / "debug" / f"run_{cp}.log"
+
+
 def _stream_proc(proc, cp: str, q: "queue.Queue[str | None]") -> None:
-    """Thread dédié : lit stdout du subprocess et accumule dans _run_logs[cp]."""
-    for line in proc.stdout:
-        line = _strip_ansi(line.rstrip())
-        if line:
-            _run_logs[cp].append(line)
-            q.put(line)
+    """Thread dédié : lit stdout du subprocess, accumule en RAM et écrit sur disque."""
+    lf = _log_file(cp)
+    lf.parent.mkdir(exist_ok=True)
+    with lf.open("w", encoding="utf-8") as fh:
+        for line in proc.stdout:
+            line = _strip_ansi(line.rstrip())
+            if line:
+                _run_logs[cp].append(line)
+                fh.write(line + "\n")
+                fh.flush()
+                q.put(line)
     proc.wait()
-    _run_done[cp] = (proc.returncode == 0)
+    ok = (proc.returncode == 0)
+    _run_done[cp] = ok
+    with lf.open("a", encoding="utf-8") as fh:
+        fh.write(f"__DONE__={'ok' if ok else 'error'}\n")
     q.put(None)
 
 
@@ -667,16 +679,27 @@ def run_pipeline():
 @app.route("/api/run/<cp>/logs")
 def run_logs_endpoint(cp):
     from_idx = max(0, int(request.args.get("from", 0)))
-    if cp not in _run_logs:
-        return jsonify({"lines": [], "total": 0, "done": None, "tracked": False})
-    lines = _run_logs[cp]
-    done  = _run_done.get(cp)
-    return jsonify({
-        "lines":   lines[from_idx:],
-        "total":   len(lines),
-        "done":    done,
-        "tracked": True,
-    })
+
+    # Source 1 : RAM (run en cours ou terminé dans cette session api.py)
+    if cp in _run_logs:
+        lines = _run_logs[cp]
+        done  = _run_done.get(cp)
+        return jsonify({"lines": lines[from_idx:], "total": len(lines), "done": done, "tracked": True})
+
+    # Source 2 : fichier log persisté sur disque (run d'une session précédente ou du terminal)
+    lf = _log_file(cp)
+    if lf.exists():
+        raw   = lf.read_text(encoding="utf-8").splitlines()
+        done  = None
+        lines = []
+        for l in raw:
+            if l.startswith("__DONE__="):
+                done = (l == "__DONE__=ok")
+            else:
+                lines.append(l)
+        return jsonify({"lines": lines[from_idx:], "total": len(lines), "done": done, "tracked": True})
+
+    return jsonify({"lines": [], "total": 0, "done": None, "tracked": False})
 
 
 # ---------------------------------------------------------------------------
