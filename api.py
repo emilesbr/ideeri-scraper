@@ -144,6 +144,18 @@ def _strip_ansi(s: str) -> str:
     return _ANSI.sub("", s)
 
 
+def _fetch_all(query, page_size: int = 1000) -> list:
+    """Pagine la requête Supabase pour dépasser la limite implicite de 1000 lignes."""
+    results, offset = [], 0
+    while True:
+        page = query.range(offset, offset + page_size - 1).execute().data
+        results.extend(page)
+        if len(page) < page_size:
+            break
+        offset += page_size
+    return results
+
+
 def _trend_30j(historique: list, current_nb: int):
     """Retourne current_nb - nb_total il y a ~30 jours, ou None si données insuffisantes."""
     if not historique or len(historique) < 2:
@@ -217,8 +229,8 @@ def zones():
     all_ann_by_cp: dict[str, list] = {}
     for (cp, _), _ in zones_map.items():
         if cp not in all_ann_by_cp:
-            rows_cp = sb.table("annonces").select("commune") \
-                        .eq("code_postal", cp).eq("est_active", True).execute().data
+            rows_cp = _fetch_all(sb.table("annonces").select("commune") \
+                        .eq("code_postal", cp).eq("est_active", True))
             all_ann_by_cp[cp] = rows_cp
 
     result = []
@@ -259,7 +271,7 @@ def zone(cp):
     sb = _sb()
     commune_filter = (request.args.get("commune") or "").strip() or None
 
-    rows = sb.table("annonces").select("*").eq("code_postal", cp).eq("est_active", True).execute().data
+    rows = _fetch_all(sb.table("annonces").select("*").eq("code_postal", cp).eq("est_active", True))
     if commune_filter:
         norm_cf  = _norm_commune(commune_filter)
         filtered = [r for r in rows if _norm_commune(r.get("commune", "")) == norm_cf]
@@ -417,8 +429,8 @@ def zone(cp):
 def map_data():
     sb = _sb()
     zones = sb.table("zones_ref").select("*").execute().data
-    rows  = sb.table("annonces").select("code_insee, bien_id, entite_id, est_active") \
-              .eq("est_active", True).execute().data
+    rows  = _fetch_all(sb.table("annonces").select("code_insee, bien_id, entite_id, est_active") \
+              .eq("est_active", True))
 
     by_insee: dict[str, dict] = {}
     for z in zones:
@@ -486,9 +498,9 @@ def entites_search():
 @app.route("/api/entite/<path:nom>")
 def entite(nom):
     sb = _sb()
-    rows = sb.table("annonces") \
+    rows = _fetch_all(sb.table("annonces") \
              .select("code_postal, commune, code_insee, source, bien_id, prix_affiche, surface, titre, dpe") \
-             .eq("nom_commercial", nom).eq("est_active", True).execute().data
+             .eq("nom_commercial", nom).eq("est_active", True))
 
     # Agréger par CP
     cp_map: dict[str, dict] = {}
