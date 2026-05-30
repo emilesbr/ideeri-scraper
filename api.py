@@ -144,6 +144,19 @@ def _strip_ansi(s: str) -> str:
     return _ANSI.sub("", s)
 
 
+def _trend_30j(historique: list, current_nb: int):
+    """Retourne current_nb - nb_total il y a ~30 jours, ou None si données insuffisantes."""
+    if not historique or len(historique) < 2:
+        return None
+    from datetime import date, timedelta
+    target = (date.today() - timedelta(days=30)).isoformat()
+    past_entries = [h for h in historique if h.get("date", "") <= target]
+    if not past_entries:
+        return None
+    closest = max(past_entries, key=lambda h: h.get("date", ""))
+    return current_nb - (closest.get("nb_total") or 0)
+
+
 def _run_status(run: dict | None) -> dict:
     if not run:
         return {"status": "never", "date": None, "lbc_pages": 0, "sl_pages": 0,
@@ -301,13 +314,14 @@ def zone(cp):
     eids = [k for k in ent_map if isinstance(k, str) and len(k) == 36 and "-" in k]
     if eids:
         try:
-            et_rows = sb.table("entites").select("id, nom_commercial, type_entite") \
+            et_rows = sb.table("entites").select("id, nom_commercial, type_entite, historique_activite") \
                         .in_("id", eids[:200]).execute().data
             for et in et_rows:
                 if et["id"] in ent_map:
                     if et.get("nom_commercial"):
                         ent_map[et["id"]]["nom"] = et["nom_commercial"]
-                    ent_map[et["id"]]["type"] = et.get("type_entite") or "agence"
+                    ent_map[et["id"]]["type"]      = et.get("type_entite") or "agence"
+                    ent_map[et["id"]]["historique"] = et.get("historique_activite") or []
         except Exception:
             pass
 
@@ -319,6 +333,7 @@ def zone(cp):
             "nb_lbc":     len(v["lbc_biens"]),
             "nb_seloger": len(v["sl_biens"]),
             "type":       v["type"],
+            "trend_30j":  _trend_30j(v.get("historique", []), len(v["biens"])),
         }
          for v in ent_map.values()],
         key=lambda x: x["nb_mandats"], reverse=True,

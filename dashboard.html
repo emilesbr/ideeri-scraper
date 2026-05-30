@@ -1391,13 +1391,18 @@ function renderZone() {
                 e.nb_lbc     ? `<span class="badge b-lbc">${e.nb_lbc}</span>`    : '',
                 e.nb_seloger ? `<span class="badge b-sl">${e.nb_seloger}</span>` : '',
               ].filter(Boolean).join(' ') || '<span class="dimmed">—</span>';
+              const t = e.trend_30j;
+              const trendHtml = t == null ? ''
+                : t > 0 ? `<span style="font-size:10px;color:#38a169;margin-left:5px;font-weight:400">↑+${t}</span>`
+                : t < 0 ? `<span style="font-size:10px;color:#e53e3e;margin-left:5px;font-weight:400">↓${t}</span>`
+                : `<span style="font-size:10px;color:#a0aec0;margin-left:5px;font-weight:400">=</span>`;
               return `<tr>
                 <td style="text-align:center" onclick="event.stopPropagation()">
                   <input type="checkbox" class="ent-cb" data-nom="${htmlEsc(e.nom)}" ${checked} onchange="toggleEntity(this)">
                 </td>
                 <td onclick="showEntite('${encodeURIComponent(e.nom)}')"><span class="rank ${rk}">${i+1}</span></td>
                 <td onclick="showEntite('${encodeURIComponent(e.nom)}')"><span class="ent-name">${e.nom}</span>${tb}</td>
-                <td onclick="showEntite('${encodeURIComponent(e.nom)}')"><strong>${e.nb_mandats}</strong></td>
+                <td onclick="showEntite('${encodeURIComponent(e.nom)}')"><strong>${e.nb_mandats}</strong>${trendHtml}</td>
                 <td onclick="showEntite('${encodeURIComponent(e.nom)}')"><div class="pdm-wrap"><div class="pdm-bg"><div class="pdm-fill" style="width:${pdm}%;background:${col}"></div></div><span class="pdm-pct" style="color:${col}">${pdm}%</span></div></td>
                 <td onclick="showEntite('${encodeURIComponent(e.nom)}')"><span>${e.nb_biens}</span></td>
                 <td onclick="showEntite('${encodeURIComponent(e.nom)}')">${portails}</td>
