@@ -733,20 +733,15 @@ ORDER BY scraped_at DESC;
 
 ## 10. Bugs connus et limitations
 
-**`nb_annonces_actives` dans `entites` n'agrège pas les CPs** :
-Le compteur est écrasé à chaque run du transform sur un CP donné. Pour une entité présente
-sur plusieurs CPs (ex : AGENCE PILAT sur 69700 et 42800), la valeur reflète uniquement le
-CP du dernier run. Fix attendu : calculer depuis `annonces` en agrégeant tous les CPs, ou
-cumuler dans `historique_activite`.
-
 **Pattern multi-CP** :
 Les agences locales opèrent souvent sur des communes adjacentes avec des CPs différents
 (ex : Givors 69700 / Rive-de-Gier 42800). Le portail agrège géographiquement, le pipeline
 sépare par CP exact. Pour le volume complet d'une agence, additionner ses mandats sur tous
 ses `codes_postaux` dans la table `entites`.
 
-**`processed` dans `stg_*`** : le flag `processed=true` n'est pas positionné après
-transform — toutes les lignes restent `processed=false`. Non bloquant mais à implémenter.
+> **Notes résolues (30 mai 2026)** : `nb_annonces_actives` agrège déjà tous les CPs
+> (`update_entity_snapshots` requête sans filtre CP). `processed=true` est déjà positionné
+> après chaque transform (lignes 978-982 transform.py). Ces deux items ne sont plus des bugs.
 
 **Encodage LBC** : les réponses ScrapingBee sont décodées en UTF-8 explicite (`r.content.decode('utf-8')`).
 L'ancien `r.text` utilisait l'encodage déclaré dans le Content-Type, parfois latin-1, provoquant
@@ -757,10 +752,8 @@ des noms cassés (`Ã©` au lieu de `é`).
 ## 11. Prochaines étapes
 
 ### Court terme
-- **Fix `nb_annonces_actives`** : agréger sur tous les CPs dans `transform.py`.
 - **Retry Rive-de-Gier 42800** : page 4 LBC manquante — `python3 pipeline.py retry 42800`.
-- **`processed=true`** dans `stg_*` après chaque transform.
-- **Dashboard retry** : afficher les runs incomplets (`scrape_state_{cp}.json`) avec bouton retry et slider wait.
+- **Dashboard** : ajouter trend 30j dans le classement entités de la vue zone (nécessite API change sur `/zone/<cp>`).
 
 ### Moyen terme
 - **GES SeLoger** : absent de la SERP. Chercher dans la page détail annonce individuelle.
