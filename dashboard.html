@@ -54,9 +54,10 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 .sirene-grid { display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px 20px; }
 .sirene-lbl { font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:#718096;margin-bottom:3px; }
 .sirene-val { font-size:13px;color:#2d3748; }
-.zone-item { padding: 10px 18px; cursor: pointer; transition: background .12s;
-             border-left: 3px solid transparent; }
+.zone-item { padding: 10px 14px 10px 18px; cursor: pointer; transition: background .12s;
+             border-left: 3px solid transparent; display: flex; align-items: flex-start; gap: 8px; }
 .zone-item:hover { background: #2d3748; }
+.zone-cb { width: 14px; height: 14px; cursor: pointer; accent-color: #63b3ed; flex-shrink: 0; margin-top: 2px; }
 .zone-item.active { background: #2b4c7e; border-left-color: #63b3ed; }
 .zone-item .cp    { font-weight: 600; font-size: 13px; }
 .zone-item .zname { font-size: 11px; color: #718096; margin-top: 2px; }
@@ -1099,14 +1100,20 @@ function filterZones(query) {
     return;
   }
   list.innerHTML = filtered.map(z => {
-    const zid    = zoneId(z.cp, z.commune);
-    const active = _selectedZones.has(_zoneKey(z.cp, z.commune)) ? ' active' : '';
+    const zid     = zoneId(z.cp, z.commune);
+    const checked = _selectedZones.has(_zoneKey(z.cp, z.commune));
+    const active  = checked ? ' active' : '';
     return `<div class="zone-item${active}" id="zi-${zid}"
                data-cp="${z.cp}" data-commune="${esc(z.commune)}"
                onclick="selectZone('${z.cp}','${esc(z.commune)}')">
-      <div class="cp">${z.cp} <span style="font-weight:400;font-size:11px;color:#718096">${z.commune}</span></div>
-      <div class="zmeta">${z.nb_annonces} ann. · ${z.nb_runs} run${z.nb_runs>1?'s':''}</div>
-      ${_runStatusHtml(z.run_status)}
+      <input type="checkbox" class="zone-cb" data-cp="${z.cp}" data-commune="${esc(z.commune)}"
+             ${checked ? 'checked' : ''} onclick="event.stopPropagation()"
+             onchange="toggleZoneCheck('${z.cp}','${esc(z.commune)}',this.checked)">
+      <div style="flex:1;min-width:0">
+        <div class="cp">${z.cp} <span style="font-weight:400;font-size:11px;color:#718096">${z.commune}</span></div>
+        <div class="zmeta">${z.nb_annonces} ann. · ${z.nb_runs} run${z.nb_runs>1?'s':''}</div>
+        ${_runStatusHtml(z.run_status)}
+      </div>
     </div>`;
   }).join('');
 }
@@ -1143,6 +1150,7 @@ function deselZone(cp, commune) {
   _selectedZones.delete(_zoneKey(cp, commune));
   _renderSelectedZones();
   _syncZoneActiveState();
+  _updateZoneCheckboxes();
   if (_selectedZones.size === 0) { showHome(); return; }
   if (_selectedZones.size === 1) {
     const z = [..._selectedZones.values()][0];
@@ -1152,6 +1160,20 @@ function deselZone(cp, commune) {
   } else {
     renderAggregatedZones();
   }
+}
+
+async function toggleZoneCheck(cp, commune, checked) {
+  if (checked) {
+    await selectZone(cp, commune);
+  } else {
+    deselZone(cp, commune);
+  }
+}
+
+function _updateZoneCheckboxes() {
+  document.querySelectorAll('.zone-cb').forEach(cb => {
+    cb.checked = _selectedZones.has(_zoneKey(cb.dataset.cp, cb.dataset.commune));
+  });
 }
 
 function _syncZoneActiveState() {
@@ -1203,6 +1225,7 @@ async function selectZone(cp, commune) {
     sortCol = 'mandats'; sortAsc = false; selectedEntities = new Set();
     _renderSelectedZones();
     _syncZoneActiveState();
+    _updateZoneCheckboxes();
     if (_selectedZones.size === 1) {
       renderZone();
     } else {
@@ -1337,9 +1360,9 @@ function renderZone() {
         <div class="panel">
           <div class="p-head"><span class="p-title">Portails</span></div>
           <div class="p-body">
-            <div class="bar-row"><span class="bar-lbl">LBC seul</span><div class="bar-wrap"><div class="bar-fill c-lbc" style="width:${pctLbc}%"></div></div><span class="bar-pct">${pctLbc}%</span></div>
-            <div class="bar-row"><span class="bar-lbl">SeLoger seul</span><div class="bar-wrap"><div class="bar-fill c-sl" style="width:${pctSl}%"></div></div><span class="bar-pct">${pctSl}%</span></div>
-            <div class="bar-row"><span class="bar-lbl">Les deux</span><div class="bar-wrap"><div class="bar-fill c-both" style="width:${pctBoth}%"></div></div><span class="bar-pct">${pctBoth}%</span></div>
+            <div class="bar-row"><span class="bar-lbl">LBC seul</span><div class="bar-wrap"><div class="bar-fill c-lbc" style="width:${pctLbc}%"></div></div><span class="bar-pct">${pctLbc}%</span><span style="font-size:11px;color:#a0aec0;min-width:52px;text-align:right">${z.nb_annonces_lbc||0} ann.</span></div>
+            <div class="bar-row"><span class="bar-lbl">SeLoger seul</span><div class="bar-wrap"><div class="bar-fill c-sl" style="width:${pctSl}%"></div></div><span class="bar-pct">${pctSl}%</span><span style="font-size:11px;color:#a0aec0;min-width:52px;text-align:right">${z.nb_annonces_sl||0} ann.</span></div>
+            <div class="bar-row"><span class="bar-lbl">Les deux</span><div class="bar-wrap"><div class="bar-fill c-both" style="width:${pctBoth}%"></div></div><span class="bar-pct">${pctBoth}%</span><span style="font-size:11px;color:#a0aec0;min-width:52px;text-align:right">${(z.nb_annonces_lbc||0)+(z.nb_annonces_sl||0)} total</span></div>
           </div>
         </div>
         <div class="panel">

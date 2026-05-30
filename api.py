@@ -285,8 +285,10 @@ def zone(cp):
         if not runs_check:
             return jsonify({"error": "zone inconnue"}), 404
 
-    nb_annonces = len(rows)
-    nb_dpe      = sum(1 for r in rows if r.get("dpe"))
+    nb_annonces     = len(rows)
+    nb_annonces_lbc = sum(1 for r in rows if r.get("source") == "lbc")
+    nb_annonces_sl  = sum(1 for r in rows if r.get("source") == "seloger")
+    nb_dpe          = sum(1 for r in rows if r.get("dpe"))
 
     # Biens dédupliqués (pour nb_biens + portail breakdown + multi_mandats)
     biens: dict[str, dict] = {}
@@ -390,6 +392,8 @@ def zone(cp):
 
         # ── Métriques globales (noms attendus par le dashboard) ──
         "nb_annonces":      nb_annonces,
+        "nb_annonces_lbc":  nb_annonces_lbc,  # annonces brutes LBC (source='lbc')
+        "nb_annonces_sl":   nb_annonces_sl,   # annonces brutes SeLoger
         "nb_biens":         nb_biens,
         "nb_mandats":       nb_mandats,       # somme des mandats par entité
         "nb_mandats_lbc":   nb_mandats_lbc,   # biens exclusifs LBC (dedup)
