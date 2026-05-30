@@ -377,6 +377,7 @@ let _selLbc = new Set();
 let _selSl  = new Set();
 let _lbcTotalPages = 0;
 let selectedEntities = new Set();
+let _entityZones = [];
 
 // ── Mini-bar (modal réduit) ──────────────────────────────────────────────────
 let _miniTarget = null;
@@ -864,7 +865,7 @@ function showHome() {
   document.getElementById('zone-content').style.display = 'none';
   document.getElementById('home-view').style.display = 'block';
   const overlay = document.getElementById('run-overlay');
-  if (overlay) overlay.style.display = 'none';
+  if (overlay) overlay.classList.remove('open');
   if (_map) setTimeout(() => _map.invalidateSize(), 50);
 }
 
@@ -1463,11 +1464,12 @@ async function showEntite(encodedNom) {
       </div></div>
     </div>` : '';
 
+    _entityZones = zonesTriees;
     document.getElementById('zone-content').innerHTML = `
       <div class="page-head">
         <div>
-          <div style="color:#3182ce;cursor:pointer;font-size:13px;margin-bottom:10px"
-               onclick="selectZone('${currentCp}','${esc(currentCommune)}')">← ${currentCommune} ${currentCp}</div>
+          ${currentCp ? `<div style="color:#3182ce;cursor:pointer;font-size:13px;margin-bottom:10px"
+               onclick="selectZone('${currentCp}','${esc(currentCommune)}')">← ${currentCommune} ${currentCp}</div>` : ''}
           <div style="display:flex;align-items:center;gap:14px">
             <div style="width:48px;height:48px;border-radius:50%;background:#ebf8ff;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:700;color:#2b6cb0;flex-shrink:0">${initials}</div>
             <div>
@@ -1481,6 +1483,11 @@ async function showEntite(encodedNom) {
             </div>
           </div>
         </div>
+        ${zonesTriees.length > 1 ? `<div style="padding-top:6px;flex-shrink:0">
+          <button class="btn btn-ghost" onclick="selectEntityZones()" style="font-size:12px;padding:7px 14px">
+            ⬡ Territoire (${zonesTriees.length} zones)
+          </button>
+        </div>` : ''}
       </div>
       <div class="content">
         <div class="cards" style="grid-template-columns:repeat(4,1fr)">
@@ -1718,6 +1725,47 @@ function updateSelectionPanel() {
 // ── Utils ────────────────────────────────────────────────────────────────────
 function openEntitePanel(nom) {
   showEntite(encodeURIComponent(nom));
+}
+
+async function selectEntityZones() {
+  if (!_entityZones.length) return;
+  const zc = document.getElementById('zone-content');
+  zc.style.display = 'block';
+  document.getElementById('home-view').style.display = 'none';
+  zc.innerHTML = `<div class="page-head">
+    <div style="animation:pulse 1.4s ease-in-out infinite">
+      <div style="width:240px;height:24px;background:#e2e8f0;border-radius:6px;margin-bottom:8px"></div>
+      <div style="width:160px;height:12px;background:#edf2f7;border-radius:4px"></div>
+    </div>
+  </div>
+  <div class="content"><div class="cards" style="grid-template-columns:repeat(4,1fr)">${
+    Array(4).fill(0).map(()=>`<div class="card" style="animation:pulse 1.4s ease-in-out infinite">
+      <div style="width:80%;height:10px;background:#edf2f7;border-radius:3px;margin-bottom:10px"></div>
+      <div style="width:50%;height:28px;background:#e2e8f0;border-radius:5px"></div>
+    </div>`).join('')
+  }</div></div>`;
+
+  _selectedZones.clear();
+  await Promise.all(_entityZones.map(async z => {
+    try {
+      const params = z.commune ? `?commune=${encodeURIComponent(z.commune)}` : '';
+      const data = await apiFetch('/zone/' + z.cp + params);
+      _selectedZones.set(_zoneKey(z.cp, z.commune), { cp: z.cp, commune: z.commune, data });
+    } catch(_) {}
+  }));
+
+  currentCp = ''; currentCommune = '';
+  _renderSelectedZones();
+  _syncZoneActiveState();
+  if (_selectedZones.size === 0) { showHome(); return; }
+  if (_selectedZones.size === 1) {
+    const z = [..._selectedZones.values()][0];
+    currentCp = z.cp; currentCommune = z.commune; zoneData = z.data;
+    sortCol = 'mandats'; sortAsc = false; selectedEntities = new Set();
+    renderZone();
+  } else {
+    renderAggregatedZones();
+  }
 }
 
 function _fmtEffectif(code) {
