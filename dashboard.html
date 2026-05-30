@@ -385,7 +385,8 @@ let _miniTarget = null;
 let _logPoller  = null;
 let _logIdx     = 0;
 let _miniRunning = false;
-let _miniSnapshot = null; // snapshot du contexte sauvegardé au minimize
+let _miniSnapshot = null;      // snapshot du contexte sauvegardé au minimize
+let _savedMiniSnapshot = null; // sauvegarde quand un 2nd modal s'ouvre pendant un run actif
 
 function minimizeModal(target) {
   _miniTarget = target;
@@ -562,6 +563,10 @@ async function dismissAlert(cp, commune) {
 // ── Run modal (unifié : nouvelle zone + relancer existante) ──────────────────
 
 async function openRunModal(cp, commune) {
+  // Si un run est déjà en cours en mini, sauvegarder son snapshot avant d'écraser le contexte
+  if (_miniRunning && _miniSnapshot && !_savedMiniSnapshot) {
+    _savedMiniSnapshot = { ..._miniSnapshot };
+  }
   _runCp = cp || ''; _runCommune = commune || '';
 
   document.getElementById('run-log').style.display = 'none';
@@ -779,7 +784,17 @@ async function acceptRunIncomplete() {
 }
 
 function closeRunModal() {
-  if (_miniRunning) { minimizeModal('run'); return; }
+  if (_miniRunning) {
+    if (_savedMiniSnapshot) {
+      // Modal fermé sans lancer de nouveau run — restaurer l'état du run en cours
+      _miniSnapshot = _savedMiniSnapshot;
+      _savedMiniSnapshot = null;
+      document.getElementById('run-overlay').classList.remove('open');
+      return;
+    }
+    minimizeModal('run');
+    return;
+  }
   document.getElementById('run-overlay').classList.remove('open');
   document.getElementById('run-minimize-btn').style.display = 'none';
   document.getElementById('run-action-btn').style.display = 'inline';
@@ -1579,6 +1594,7 @@ async function showEntite(encodedNom) {
 }
 
 async function startRun() {
+  _savedMiniSnapshot = null; // nouveau run lancé — le snapshot sauvegardé est obsolète
   let url, body;
   let cp = _runCp, commune = _runCommune;
 
