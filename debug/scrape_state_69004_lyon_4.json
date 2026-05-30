@@ -1,0 +1,32 @@
+{
+  "commune": "lyon 4",
+  "cp": "69004",
+  "commune_officielle": "lyon 4",
+  "code_insee": "",
+  "lbc_base": "https://www.leboncoin.fr/recherche?category=9&locations=Lyon_69004__45.77617_4.82958_1651&immo_sell_type=old&real_estate_type=2,1&owner_type=all",
+  "sl_base": "https://www.seloger.com/classified-search?classifiedBusiness=Professional&distributionTypes=Buy&estateTypes=House,Apartment&locations=POCOFR4448&projectTypes=Resale",
+  "lbc_pages": 0,
+  "sl_pages": 14,
+  "lbc_scraped": [],
+  "sl_scraped": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14
+  ],
+  "pages_erreur_lbc": [
+    1
+  ],
+  "pages_erreur_sl": [],
+  "scraped_at": "2026-05-30T09:42:52.113205+00:00"
+}
