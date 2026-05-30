@@ -6,6 +6,9 @@
 
 # HTML bruts ScrapingBee (volumineux, non versionné)
 debug/*.html
+
+# Logs avec données personnelles (email)
+Logs.csv
 capture_seloger.html
 
 # Python

@@ -827,6 +827,63 @@ def cmd_batch(min_credits: int = 300, source: str | None = None, force: bool = F
         icon = f"{G}✅{RST}" if r["status"] == "ok" else (f"{C}⏭ {RST}" if r["status"] == "skipped" else f"{R}❌{RST}")
         print(f"  {icon} {r['commune']} ({r['cp']}) — {r['status']}")
 
+    # Planifier un retry-all dans 3h si des pages sont en erreur
+    has_errors = False
+    for sf in DEBUG.glob("scrape_state_*.json"):
+        try:
+            st = json.loads(sf.read_text(encoding="utf-8"))
+            if st.get("pages_erreur_lbc") or st.get("pages_erreur_sl"):
+                has_errors = True
+                break
+        except Exception:
+            pass
+
+    if has_errors:
+        import sys
+        log_path = DEBUG / "retry_all.log"
+        script   = Path(__file__).resolve()
+        delay    = 3 * 3600
+        cmd      = (f"sleep {delay} && "
+                    f"{sys.executable} {script} retry-all --min-credits {min_credits} "
+                    f">> {log_path} 2>&1")
+        import subprocess as _sp
+        _sp.Popen(["bash", "-c", cmd], start_new_session=True)
+        from datetime import timedelta
+        retry_at = (datetime.now() + timedelta(seconds=delay)).strftime("%H:%M")
+        print(f"\n  {C}Pages manquantes détectées — retry-all planifié à {retry_at} "
+              f"(logs : debug/retry_all.log){RST}")
+
+
+def _fetch_retry_page(src: str, cp: str, p: int, url: str, params: dict, timeout: int) -> dict:
+    """Priorité : 1) cache local  2) storage Supabase  3) ScrapingBee (crédits)."""
+    pid    = f"{src}_{cp}_p{p}"
+    marker = "__NEXT_DATA__" if src == "lbc" else "__UFRN_FETCHER__"
+
+    for suffix in ("_retry.html", "_diag.html", ".html"):
+        cached = DEBUG / f"{pid}{suffix}"
+        if cached.exists():
+            html = cached.read_text(encoding="utf-8")
+            if marker in html:
+                print(f"  {C}↩ {src:8s} p{p} | cache local{RST}")
+                return {"id": pid, "url": url, "status": 200, "html": html, "error": None, "elapsed": 0}
+
+    try:
+        svc_key = os.environ.get("SUPA_SERVICE_KEY") or os.environ.get("SUPA_KEY")
+        if svc_key:
+            from supabase import create_client as _sc
+            _sb2 = _sc(os.environ["SUPA_URL"], svc_key)
+            for fname in (f"{pid}.html", f"{pid}_retry.html"):
+                content = _sb2.storage.from_("debug-html").download(fname)
+                html = content.decode("utf-8", errors="replace")
+                if marker in html:
+                    print(f"  {C}↩ {src:8s} p{p} | storage{RST}")
+                    return {"id": pid, "url": url, "status": 200, "html": html, "error": None, "elapsed": 0}
+    except Exception:
+        pass
+
+    print(f"  {Y}↗ {src:8s} p{p} | ScrapingBee (non trouvé en cache){RST}")
+    return _fetch(pid + "_retry", url, params, timeout)
+
 
 def cmd_retry(cp: str, commune: str | None = None, wait_override: int | None = None,
               lbc_pages_override: str | None = None, sl_pages_override: str | None = None):
@@ -944,37 +1001,7 @@ def cmd_retry(cp: str, commune: str | None = None, wait_override: int | None = N
     print(f"\n  Scraping {len(tasks)} page(s)...\n")
 
     def _fetch_or_cache(src: str, p: int, url: str, params: dict, to: int) -> dict:
-        """Priorité : 1) cache local  2) storage Supabase  3) ScrapingBee (crédits)."""
-        pid = f"{src}_{cp}_p{p}"
-        marker = "__NEXT_DATA__" if src == "lbc" else "__UFRN_FETCHER__"
-
-        # 1. Cache local (debug/*.html)
-        for suffix in ("_retry.html", "_diag.html", ".html"):
-            cached = DEBUG / f"{pid}{suffix}"
-            if cached.exists():
-                html = cached.read_text(encoding="utf-8")
-                if marker in html:
-                    print(f"  {C}↩ {src:8s} p{p} | cache local{RST}")
-                    return {"id": pid, "url": url, "status": 200, "html": html, "error": None, "elapsed": 0}
-
-        # 2. Storage Supabase (gratuit — HTML déjà payé)
-        try:
-            svc_key = os.environ.get("SUPA_SERVICE_KEY") or os.environ.get("SUPA_KEY")
-            if svc_key:
-                from supabase import create_client as _sc
-                _sb2 = _sc(os.environ["SUPA_URL"], svc_key)
-                for fname in (f"{pid}.html", f"{pid}_retry.html"):
-                    content = _sb2.storage.from_("debug-html").download(fname)
-                    html = content.decode("utf-8", errors="replace")
-                    if marker in html:
-                        print(f"  {C}↩ {src:8s} p{p} | storage{RST}")
-                        return {"id": pid, "url": url, "status": 200, "html": html, "error": None, "elapsed": 0}
-        except Exception:
-            pass
-
-        # 3. ScrapingBee (coûte des crédits — dernier recours)
-        print(f"  {Y}↗ {src:8s} p{p} | ScrapingBee (non trouvé en cache){RST}")
-        return _fetch(pid + "_retry", url, params, to)
+        return _fetch_retry_page(src, cp, p, url, params, to)
 
     has_lbc = any(s == "lbc" for s, *_ in tasks)
     with ThreadPoolExecutor(max_workers=2 if has_lbc else 5) as ex:
@@ -1039,6 +1066,132 @@ def cmd_retry(cp: str, commune: str | None = None, wait_override: int | None = N
             _ok(f"{n} nouvelles entités enrichies via SIRENE")
     except Exception as e:
         _warn(f"Enrichissement SIRENE non bloquant : {e}")
+
+
+# ---------------------------------------------------------------------------
+# retry-all
+# ---------------------------------------------------------------------------
+
+def cmd_retry_all(min_credits: int = 200, max_attempts: int = 3):
+    """Relance les pages manquantes sur toutes les zones — conçu pour tourner sans supervision."""
+    state_files = sorted(DEBUG.glob("scrape_state_*.json"))
+
+    zones: list[tuple[Path, dict, list, list]] = []
+    for sf in state_files:
+        try:
+            st = json.loads(sf.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        err_lbc = st.get("pages_erreur_lbc", [])
+        err_sl  = st.get("pages_erreur_sl",  [])
+        if not err_lbc and not err_sl:
+            continue
+        att     = st.get("retry_attempts", {})
+        lbc_att = att.get("lbc", {})
+        sl_att  = att.get("seloger", {})
+        active_lbc = [p for p in err_lbc if lbc_att.get(str(p), 0) < max_attempts]
+        active_sl  = [p for p in err_sl  if sl_att.get(str(p), 0)  < max_attempts]
+        if active_lbc or active_sl:
+            zones.append((sf, st, active_lbc, active_sl))
+
+    if not zones:
+        _ok("retry-all : toutes les zones complètes (ou pages au-delà du seuil d'abandon)")
+        return
+
+    print(f"\n{B}=== Retry-all : {len(zones)} zone(s) avec pages manquantes ==={RST}\n")
+
+    sb = _sb()
+    for sf, state, active_lbc, active_sl in zones:
+        cp      = state["cp"]
+        commune = state["commune"]
+        lbc_base = state.get("lbc_base")
+        sl_base  = state.get("sl_base")
+
+        credits = _get_credits_remaining()
+        if credits is not None and credits < min_credits:
+            _warn(f"Quota insuffisant ({credits} crédits < seuil {min_credits}) — arrêt retry-all")
+            return
+
+        cost_est = len(active_lbc) * 75 + len(active_sl) * 10
+        print(f"\n  {B}{commune} ({cp}){RST} — LBC {active_lbc} | SL {active_sl} | ~{cost_est} crédits")
+
+        tasks = []
+        if lbc_base:
+            for p in active_lbc:
+                tasks.append(("lbc",     p, _lbc_page(lbc_base, p),               LBC_PARAMS, 180))
+        if sl_base:
+            for p in active_sl:
+                url = sl_base if p == 1 else f"{sl_base}&page={p}"
+                tasks.append(("seloger", p, url,                                   SL_PARAMS,   45))
+
+        still_err_lbc = list(active_lbc)
+        still_err_sl  = list(active_sl)
+
+        has_lbc = any(s == "lbc" for s, *_ in tasks)
+        with ThreadPoolExecutor(max_workers=2 if has_lbc else 5) as ex:
+            fmap = {
+                ex.submit(_fetch_retry_page, src, cp, p, url, params, to): (src, p, url)
+                for src, p, url, params, to in tasks
+            }
+            for fut in as_completed(fmap):
+                src, p, url = fmap[fut]
+                r = fut.result()
+                if r["elapsed"] > 0:
+                    icon = f"{G}✓{RST}" if r["status"] == 200 else f"{R}✗{RST}"
+                    print(f"    {icon} {src:8s} p{p} | HTTP {r['status'] or 'ERR'} | {r['elapsed']}s")
+                if r.get("status") != 200:
+                    continue
+                if src == "lbc":
+                    ads, raw, _ = _parse_lbc(r["html"])
+                    if not ads:
+                        continue
+                    _insert_stg("stg_lbc", commune, cp, p, url, raw, len(ads), sb)
+                    still_err_lbc = [x for x in still_err_lbc if x != p]
+                else:
+                    ids, raw, _ = _parse_seloger(r["html"])
+                    if not ids:
+                        continue
+                    _insert_stg("stg_seloger", commune, cp, p, url, raw, len(ids), sb)
+                    still_err_sl = [x for x in still_err_sl if x != p]
+
+        # Mettre à jour le compteur de tentatives
+        att     = state.setdefault("retry_attempts", {})
+        lbc_att = att.setdefault("lbc", {})
+        sl_att  = att.setdefault("seloger", {})
+        for p in still_err_lbc:
+            lbc_att[str(p)] = lbc_att.get(str(p), 0) + 1
+        for p in still_err_sl:
+            sl_att[str(p)]  = sl_att.get(str(p), 0) + 1
+
+        # Mettre à jour les listes d'erreurs dans le state
+        all_err_lbc = state.get("pages_erreur_lbc", [])
+        all_err_sl  = state.get("pages_erreur_sl",  [])
+        state["pages_erreur_lbc"]      = sorted(p for p in all_err_lbc if lbc_att.get(str(p), 0) < max_attempts)
+        state["pages_erreur_sl"]       = sorted(p for p in all_err_sl  if sl_att.get(str(p), 0)  < max_attempts)
+        state["pages_abandonnes_lbc"]  = sorted(p for p in all_err_lbc if lbc_att.get(str(p), 0) >= max_attempts)
+        state["pages_abandonnes_sl"]   = sorted(p for p in all_err_sl  if sl_att.get(str(p), 0)  >= max_attempts)
+        sf.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
+
+        if state["pages_abandonnes_lbc"] or state["pages_abandonnes_sl"]:
+            _warn(f"Pages abandonnées (≥{max_attempts} tentatives) — "
+                  f"LBC: {state['pages_abandonnes_lbc']} | SL: {state['pages_abandonnes_sl']}")
+
+        recovered = len(active_lbc) - len(still_err_lbc) + len(active_sl) - len(still_err_sl)
+        if recovered == 0:
+            _warn(f"Aucune page récupérée pour {commune} ({cp})")
+            continue
+
+        print()
+        cmd_transform(cp, commune)
+        try:
+            from enrich_sirene import enrich
+            n = enrich(quiet=True)
+            if n:
+                _ok(f"{n} nouvelles entités enrichies via SIRENE")
+        except Exception as e:
+            _warn(f"Enrichissement SIRENE non bloquant : {e}")
+
+    print(f"\n{B}=== Retry-all terminé ==={RST}")
 
 
 # ---------------------------------------------------------------------------
@@ -1229,6 +1382,12 @@ def main():
     p.add_argument("--sl-pages", dest="sl_pages_override", default=None,
                    help="Pages SeLoger à re-scraper (ex: 5,6) — override le state")
 
+    p = sub.add_parser("retry-all", help="Relance les pages manquantes sur toutes les zones (non-interactif)")
+    p.add_argument("--min-credits", type=int, default=200, dest="min_credits",
+                   help="Crédits minimum avant de s'arrêter (défaut 200)")
+    p.add_argument("--max-attempts", type=int, default=3, dest="max_attempts",
+                   help="Nombre max de tentatives par page avant abandon (défaut 3)")
+
     p = sub.add_parser("batch", help="Scrape toutes les zones actives (zones_ref actif=true)")
     p.add_argument("--min-credits", type=int, default=300, dest="min_credits",
                    help="Crédits minimum avant de s'arrêter (défaut 300)")
@@ -1256,6 +1415,7 @@ def main():
         "run":       lambda: cmd_run(args.cp, args.commune, getattr(args, "sl_code", None), getattr(args, "source", None), getattr(args, "lbc_loc", None)),
         "batch":     lambda: cmd_batch(getattr(args, "min_credits", 300), getattr(args, "source", None), getattr(args, "force", False)),
         "retry":     lambda: cmd_retry(args.cp, getattr(args, "commune", None), getattr(args, "wait_override", None), getattr(args, "lbc_pages_override", None), getattr(args, "sl_pages_override", None)),
+        "retry-all": lambda: cmd_retry_all(getattr(args, "min_credits", 200), getattr(args, "max_attempts", 3)),
         "reset":     lambda: cmd_reset(args.cp),
         "enrich":    lambda: cmd_enrich(getattr(args, "all", False), getattr(args, "dry_run", False)),
         "backfill":  lambda: cmd_backfill(getattr(args, "cp", None)),
