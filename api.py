@@ -514,9 +514,21 @@ def entites_search():
 @app.route("/api/entite/<path:nom>")
 def entite(nom):
     sb = _sb()
-    rows = _fetch_all(sb.table("annonces") \
-             .select("code_postal, commune, code_insee, source, bien_id, prix_affiche, surface, titre, dpe") \
-             .eq("nom_commercial", nom).eq("est_active", True))
+
+    # Résoudre l'entite_id depuis la table entites (plus fiable que nom_commercial dans annonces)
+    ent_rows = sb.table("entites").select("*").eq("nom_commercial", nom).execute().data
+    ent_data = ent_rows[0] if ent_rows else {}
+    ent_id   = ent_data.get("id")
+
+    # Requête annonces par entite_id si disponible, sinon fallback sur nom_commercial
+    if ent_id:
+        rows = _fetch_all(sb.table("annonces") \
+                 .select("code_postal, commune, code_insee, source, bien_id, prix_affiche, surface, titre, dpe, url_annonce") \
+                 .eq("entite_id", ent_id).eq("est_active", True))
+    else:
+        rows = _fetch_all(sb.table("annonces") \
+                 .select("code_postal, commune, code_insee, source, bien_id, prix_affiche, surface, titre, dpe, url_annonce") \
+                 .eq("nom_commercial", nom).eq("est_active", True))
 
     # Agréger par CP
     cp_map: dict[str, dict] = {}
@@ -549,9 +561,6 @@ def entite(nom):
         })
     zones_out.sort(key=lambda x: x["nb_mandats"], reverse=True)
 
-    ent_rows = sb.table("entites").select("*").eq("nom_commercial", nom).execute().data
-    ent_data = ent_rows[0] if ent_rows else {}
-
     historique   = ent_data.get("historique_activite") or []
     hist_sorted  = sorted(historique, key=lambda h: h.get("date", ""))
     month_ago    = (datetime.now(timezone.utc) - timedelta(days=30)).date().isoformat()
@@ -569,14 +578,15 @@ def entite(nom):
 
     annonces_out = [
         {
-            "id":      r.get("id_annonce"),
-            "titre":   r.get("titre"),
-            "prix":    r.get("prix_affiche"),
-            "surface": r.get("surface"),
-            "cp":      r.get("code_postal"),
-            "commune": r.get("commune"),
-            "dpe":     r.get("dpe"),
-            "source":  r.get("source"),
+            "id":          r.get("id_annonce"),
+            "titre":       r.get("titre"),
+            "prix":        r.get("prix_affiche"),
+            "surface":     r.get("surface"),
+            "cp":          r.get("code_postal"),
+            "commune":     r.get("commune"),
+            "dpe":         r.get("dpe"),
+            "source":      r.get("source"),
+            "url_annonce": r.get("url_annonce"),
         }
         for r in sorted(rows, key=lambda x: x.get("prix_affiche") or 0, reverse=True)[:20]
     ]
