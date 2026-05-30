@@ -998,6 +998,24 @@ def cmd_retry(cp: str, commune: str | None = None, wait_override: int | None = N
 
     lbc_params = {**LBC_PARAMS, "wait": str(wait_override)} if wait_override else LBC_PARAMS
 
+    # Auto-sondage : si lbc_pages=0 et page 1 disponible en cache/storage, détecter le total
+    if lbc_base and state.get("lbc_pages", 0) == 0 and 1 in err_lbc:
+        print(f"  {C}lbc_pages inconnu — tentative de sondage depuis cache/storage...{RST}")
+        r_p1 = _fetch_retry_page("lbc", cp, 1, _lbc_page(lbc_base, 1), lbc_params, 180)
+        if r_p1.get("status") == 200:
+            ads_p1, raw_p1, total_p1 = _parse_lbc(r_p1["html"])
+            if total_p1 > 0:
+                nb_pages = max(1, math.ceil(total_p1 / 35))
+                state["lbc_pages"] = nb_pages
+                scraped = set(state.get("lbc_scraped", []))
+                new_pages = [p for p in range(2, nb_pages + 1) if p not in scraped]
+                err_lbc = sorted((set(err_lbc) - {1}) | set(new_pages))
+                _ok(f"Sondage OK — {total_p1} ann. → {nb_pages} pages · {len(new_pages)} à scraper")
+                sb_p1 = _sb()
+                _insert_stg("stg_lbc", commune, cp, 1, _lbc_page(lbc_base, 1), raw_p1, len(ads_p1), sb_p1)
+            else:
+                _warn("Page 1 récupérée mais parsing vide — sondage ignoré")
+
     tasks = []
     if lbc_base:
         for p in err_lbc:

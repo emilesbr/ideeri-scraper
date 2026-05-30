@@ -1684,6 +1684,10 @@ async function startRun() {
         add(payload);
       }
     }
+    // Stream fermé sans __DONE__ (déconnexion réseau ou crash api.py)
+    add('⚠ Connexion interrompue — vérifier le statut dans la sidebar');
+    _miniDone(false);
+    btn.textContent = 'Fermer'; btn.disabled = false; btn.onclick = closeRunModal;
   } catch(e) {
     add('✗ Erreur connexion API : ' + e.message);
     add('  Vérifiez que python3 api.py est lancé.');
