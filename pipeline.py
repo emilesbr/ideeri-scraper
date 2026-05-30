@@ -563,9 +563,27 @@ def _save_scrape_state(cp: str, commune: str, lbc_base: str | None, sl_base: str
         "pages_erreur_sl":  sorted(err_sl),
         "scraped_at": datetime.now(timezone.utc).isoformat(),
     }
-    _state_file(cp, commune).write_text(
-        json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
+    payload = json.dumps(state, indent=2, ensure_ascii=False)
+    _state_file(cp, commune).write_text(payload, encoding="utf-8")
+    _upload_state(cp, commune, payload.encode())
+
+
+def _upload_state(cp: str, commune: str, content: bytes) -> None:
+    svc_key = os.environ.get("SUPA_SERVICE_KEY") or os.environ.get("SUPA_KEY")
+    if not svc_key:
+        return
+    def _do():
+        try:
+            from supabase import create_client as _sc
+            sb2 = _sc(os.environ["SUPA_URL"], svc_key)
+            fname = f"state_{cp}_{_state_slug(commune)}.json"
+            sb2.storage.from_("debug-html").upload(
+                path=fname, file=content,
+                file_options={"content-type": "application/json", "upsert": "true"},
+            )
+        except Exception:
+            pass
+    threading.Thread(target=_do, daemon=True).start()
 
 
 def _confirm(prompt: str, auto: bool) -> bool:
@@ -1072,16 +1090,42 @@ def cmd_retry(cp: str, commune: str | None = None, wait_override: int | None = N
 # retry-all
 # ---------------------------------------------------------------------------
 
+def _iter_scrape_states() -> list[tuple[Path | None, dict, str | None]]:
+    """Retourne (path_local, state_dict, storage_fname).
+    Priorité : fichiers locaux. Fallback : Supabase Storage (runner CI sans disque)."""
+    results = []
+    for sf in sorted(DEBUG.glob("scrape_state_*.json")):
+        try:
+            results.append((sf, json.loads(sf.read_text(encoding="utf-8")), None))
+        except Exception:
+            pass
+    if results:
+        return results
+    try:
+        svc_key = os.environ.get("SUPA_SERVICE_KEY") or os.environ.get("SUPA_KEY")
+        if not svc_key:
+            return []
+        from supabase import create_client as _sc
+        sb2   = _sc(os.environ["SUPA_URL"], svc_key)
+        files = sb2.storage.from_("debug-html").list(options={"limit": 1000})
+        for f in files:
+            name = f.get("name", "")
+            if not (name.startswith("state_") and name.endswith(".json")):
+                continue
+            try:
+                content = sb2.storage.from_("debug-html").download(name)
+                results.append((None, json.loads(content.decode("utf-8")), name))
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return results
+
+
 def cmd_retry_all(min_credits: int = 200, max_attempts: int = 3):
     """Relance les pages manquantes sur toutes les zones — conçu pour tourner sans supervision."""
-    state_files = sorted(DEBUG.glob("scrape_state_*.json"))
-
-    zones: list[tuple[Path, dict, list, list]] = []
-    for sf in state_files:
-        try:
-            st = json.loads(sf.read_text(encoding="utf-8"))
-        except Exception:
-            continue
+    zones: list[tuple[Path | None, dict, list, list, str | None]] = []
+    for sf, st, storage_fname in _iter_scrape_states():
         err_lbc = st.get("pages_erreur_lbc", [])
         err_sl  = st.get("pages_erreur_sl",  [])
         if not err_lbc and not err_sl:
@@ -1092,7 +1136,7 @@ def cmd_retry_all(min_credits: int = 200, max_attempts: int = 3):
         active_lbc = [p for p in err_lbc if lbc_att.get(str(p), 0) < max_attempts]
         active_sl  = [p for p in err_sl  if sl_att.get(str(p), 0)  < max_attempts]
         if active_lbc or active_sl:
-            zones.append((sf, st, active_lbc, active_sl))
+            zones.append((sf, st, active_lbc, active_sl, storage_fname))
 
     if not zones:
         _ok("retry-all : toutes les zones complètes (ou pages au-delà du seuil d'abandon)")
@@ -1101,7 +1145,7 @@ def cmd_retry_all(min_credits: int = 200, max_attempts: int = 3):
     print(f"\n{B}=== Retry-all : {len(zones)} zone(s) avec pages manquantes ==={RST}\n")
 
     sb = _sb()
-    for sf, state, active_lbc, active_sl in zones:
+    for sf, state, active_lbc, active_sl, storage_fname in zones:
         cp      = state["cp"]
         commune = state["commune"]
         lbc_base = state.get("lbc_base")
@@ -1170,7 +1214,12 @@ def cmd_retry_all(min_credits: int = 200, max_attempts: int = 3):
         state["pages_erreur_sl"]       = sorted(p for p in all_err_sl  if sl_att.get(str(p), 0)  < max_attempts)
         state["pages_abandonnes_lbc"]  = sorted(p for p in all_err_lbc if lbc_att.get(str(p), 0) >= max_attempts)
         state["pages_abandonnes_sl"]   = sorted(p for p in all_err_sl  if sl_att.get(str(p), 0)  >= max_attempts)
-        sf.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
+        payload = json.dumps(state, indent=2, ensure_ascii=False)
+        if sf is not None:
+            sf.write_text(payload, encoding="utf-8")
+        cp_st   = state["cp"]
+        com_st  = state["commune"]
+        _upload_state(cp_st, com_st, payload.encode())
 
         if state["pages_abandonnes_lbc"] or state["pages_abandonnes_sl"]:
             _warn(f"Pages abandonnées (≥{max_attempts} tentatives) — "

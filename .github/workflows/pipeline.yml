@@ -1,0 +1,55 @@
+name: Pipeline Ideeri
+
+on:
+  schedule:
+    # Batch : lundi + jeudi à 8h UTC (9h Paris hiver, 10h été)
+    - cron: "0 8 * * 1,4"
+    # Retry-all : même jours à 11h UTC (3h après le batch)
+    - cron: "0 11 * * 1,4"
+  workflow_dispatch:
+    inputs:
+      command:
+        description: "Commande à lancer (batch ou retry-all)"
+        required: true
+        default: batch
+        type: choice
+        options:
+          - batch
+          - retry-all
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Installer les dépendances
+        run: pip install supabase python-dotenv requests lzstring
+
+      - name: Déterminer la commande
+        id: cmd
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "command=${{ inputs.command }}" >> $GITHUB_OUTPUT
+          elif [ "$(date -u +%H)" = "08" ]; then
+            echo "command=batch" >> $GITHUB_OUTPUT
+          else
+            echo "command=retry-all" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Lancer ${{ steps.cmd.outputs.command }}
+        env:
+          SCRAPINGBEE_KEY: ${{ secrets.SCRAPINGBEE_KEY }}
+          SUPA_URL: ${{ secrets.SUPA_URL }}
+          SUPA_KEY: ${{ secrets.SUPA_KEY }}
+          SUPA_SERVICE_KEY: ${{ secrets.SUPA_SERVICE_KEY }}
+        run: |
+          cd ideeri
+          python3 pipeline.py ${{ steps.cmd.outputs.command }} --min-credits 200
