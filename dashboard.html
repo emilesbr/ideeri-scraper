@@ -1629,6 +1629,27 @@ async function startRun() {
   const btn = document.getElementById('run-action-btn');
   btn.textContent = 'En cours…'; btn.disabled = true;
 
+  // Dès que le run démarre, fermer = minimiser (× ne doit pas tuer le suivi)
+  _miniRunning = true;
+  if (!_miniSnapshot) {
+    _miniSnapshot = { logHtml: '', title: `▶ Run — ${commune} ${cp}`, cp, commune };
+  }
+  // Sidebar + mini-bar visibles immédiatement
+  const _sbr = document.getElementById('sb-running');
+  if (_sbr) {
+    _sbr.className = 'sb-run-indicator running';
+    _sbr.style.display = 'flex';
+    const dot = document.getElementById('sb-dot');
+    if (dot) dot.className = 'mini-dot running';
+    const txt = document.getElementById('sb-running-text');
+    if (txt) txt.textContent = `Run en cours — ${commune} ${cp}`;
+  }
+  document.getElementById('mini-title').textContent  = `Run — ${commune} ${cp}`;
+  document.getElementById('mini-status').innerHTML   = '<span class="mini-dot running" id="mini-dot"></span>En cours…';
+  document.getElementById('mini-bar').style.display  = 'block';
+  document.getElementById('mini-close-btn').style.display = 'none';
+  _miniTarget = 'run';
+
   const log = document.getElementById('log-content');
   const add = (line) => {
     const d = document.createElement('div');
